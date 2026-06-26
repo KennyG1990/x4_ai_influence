@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<content id="x4_ai_influence" name="AI Influence" description="LLM-driven faction representatives you can talk to. Conversations route through the Neural Link bridge to a local LLM; validated actions feed back into the live X4 world." author="Moshine" version="100" date="2026-06-24" save="0" enabled="1">
+  <text language="44" name="AI Influence" description="LLM-driven faction representatives you can talk to. Conversations route through the Neural Link bridge to a local LLM; validated actions feed back into the live X4 world." author="Moshine" />
+  <!-- Neural Link bridge extension: the in-game side that talks to the local bridge/LLM.
+       AI Influence is built on top of it, so it's a hard dependency. -->
+  <dependency id="x4_neural_link" />
+  <!-- djfhe HTTP client is required: it carries the chat round-trip to the Neural Link bridge.
+       Without it the HTTP calls silently no-op. -->
+  <dependency id="djfhe_http" />
+  <!-- SirNukes Mod Support APIs provides the Hotkey + Lua-loader APIs the conversation/hotkey
+       cues use; optional so the mod still loads (those features just won't bind) if it's absent. -->
+  <dependency id="sn_mod_support_apis" optional="true" />
+</content>

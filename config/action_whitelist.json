@@ -1,0 +1,16 @@
+{
+  "mvp_enabled_actions": [
+    "dialogue_only",
+    "memory_write",
+    "logbook_entry",
+    "status_update"
+  ],
+  "disabled_until_tested": [
+    "relation_delta_limited",
+    "credit_transfer_limited",
+    "mission_offer",
+    "trade_request",
+    "temporary_diplomatic_flag",
+    "faction_to_faction_proposal"
+  ]
+}

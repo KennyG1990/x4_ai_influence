@@ -1,0 +1,20 @@
+# Local/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Python/Lua/tool caches that should not ship with the mod
+__pycache__/
+*.pyc
+

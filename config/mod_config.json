@@ -1,0 +1,17 @@
+{
+  "mod_id": "x4_ai_influence",
+  "bridge_dependency": "x4_neural_link",
+  "default_profile": "normal",
+  "mvp_representative": {
+    "actor_id": "argon_nerra",
+    "name": "Administrator Nerra",
+    "role": "Argon Strategic Liaison",
+    "faction_id": "argon",
+    "authority_tier": 3
+  },
+  "safety": {
+    "allow_relation_changes": false,
+    "allow_credit_transfers": false,
+    "allow_autonomous_diplomacy": false
+  }
+}
