@@ -333,6 +333,8 @@ function AI_Influence.SyncInfluence(saveId)
                         if a.ware then tp.ware = tostring(a.ware) end
                         if a.amount ~= nil then tp.amount = tonumber(a.amount) or 0 end
                         if a.op then tp.op = tostring(a.op) end
+                        -- SPEC 3.3-B military order field (patrol|raid)
+                        if a.kind then tp.kind = tostring(a.kind) end
                         pcall(function() AddUITriggeredEvent("ai_influence", "action", tp) end)
                     end
                 end
