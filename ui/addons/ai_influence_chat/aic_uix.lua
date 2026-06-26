@@ -193,6 +193,27 @@ end
 
 local function onReportRelation(_, param) AI_Influence.ReportRelation(param) end
 
+-- #66: a REAL combat event (a watched/ordered ship killed or was destroyed) -> POST a located hostile_event
+-- to the event ledger. param = "attacker=..|victim=..|sector=..|kind=..|magnitude=..|save_id=..".
+function AI_Influence.ReportHostile(param)
+    local req = newRequest("POST")
+    if not req then return end
+    local ctx = {}
+    for pair in string.gmatch(tostring(param or ""), "([^|]+)") do
+        local eq = string.find(pair, "=")
+        if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
+    end
+    local body = { save_id = ctx.save_id, events = { {
+        attacker_faction = ctx.attacker, victim_faction = ctx.victim, sector = ctx.sector,
+        event_kind = ctx.kind or "ship_destroyed", magnitude = tonumber(ctx.magnitude) or 1, source = "game" } } }
+    req:setUrl(BRIDGE_URL .. "/v1/hostile_events")
+    req:setBody((json and json.encode) and json.encode(body) or body)
+    log("hostile_event POST " .. tostring(ctx.attacker) .. " vs " .. tostring(ctx.victim) .. " @ " .. tostring(ctx.sector))
+    req:send(function(resp, err) if err then log("hostile_event err: " .. tostring(err)) end end)
+end
+
+local function onReportHostile(_, param) AI_Influence.ReportHostile(param) end
+
 -- ---- sync-on-load: push the game's ACTUAL faction relations so the DB mirrors reality -----------
 -- MD raises "AIChat.sync_relations" with "save_id=<sid>||idA~idB~rel;idA~idB~rel;..." on game load.
 function AI_Influence.SyncRelations(param)
@@ -736,6 +757,7 @@ local function init()
     RegisterEvent("AIChat.index_npcs", onIndexNpcs)
     RegisterEvent("AIChat.suggest", onRequestSuggest)
     RegisterEvent("AIChat.relation_report", onReportRelation)
+    RegisterEvent("AIChat.hostile_event", onReportHostile)
     RegisterEvent("AIChat.sync_relations", onSyncRelations)
     RegisterEvent("AIChat.npc_skills", onNpcSkills)
     log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.suggest, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")

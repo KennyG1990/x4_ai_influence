@@ -113,6 +113,10 @@
                                                                                                                     </create_order>
                                                                                                                   </do_else>
                                                                                                                   <debug_text text="'[AIINF] order ' + $okind + ' ' + $ofid + ' vs ' + $otgt + ' ship=' + $oship.knownname" filter="general"/>
+                                                                                                                  <!-- #66: watch this ordered ship for REAL combat -> hostile_events (event ledger). -->
+                                                                                                                  <do_if value="md.ai_influence_combat.State.$Watched?">
+                                                                                                                    <add_to_group groupname="md.ai_influence_combat.State.$Watched" object="$oship"/>
+                                                                                                                  </do_if>
                                                                                                                 </do_if>
                                                                                                               </do_if>
                                                                                                             </do_elseif>

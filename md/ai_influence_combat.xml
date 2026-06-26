@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="ai_influence_combat" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- SPEC #66 (Ken/Codex event ledger): capture CONFIRMED hostile actions around the ships WE order. When
+       On_action issues a raid/patrol order, the ordered ship is added to State.$Watched. The nested cues fire on
+       the REAL kill/destruction of a watched ship and POST a located hostile_event to the bridge so conflicts/
+       losses are grounded in actual combat — never in relation thresholds or decisions. The event cues are
+       NESTED inside State so they only activate AFTER the group exists (avoids the null-group race). -->
+  <cues>
+    <cue name="State" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <create_group groupname="$Watched"/>
+      </actions>
+      <cues>
+        <!-- A watched (ordered) ship KILLED something: object = our ship (attacker), param = the victim.
+             group="$Watched" (bare) — nested cues inherit State's namespace (DeadAir pattern). -->
+        <cue name="On_killed" instantiate="true">
+          <conditions>
+            <event_object_killed_object group="$Watched"/>
+          </conditions>
+          <actions>
+            <set_value name="$attacker" exact="event.object"/>
+            <set_value name="$victim" exact="event.param"/>
+            <do_if value="$attacker and $victim and $attacker.owner and $victim.owner">
+              <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
+              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $attacker.owner + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|save_id=' + $sid"/>
+            </do_if>
+          </actions>
+        </cue>
+
+        <!-- A watched (ordered) ship WAS DESTROYED: object = our ship (victim), param = the killer. -->
+        <cue name="On_destroyed" instantiate="true">
+          <conditions>
+            <event_object_destroyed group="$Watched"/>
+          </conditions>
+          <actions>
+            <set_value name="$victim" exact="event.object"/>
+            <set_value name="$attacker" exact="event.param"/>
+            <do_if value="$victim and $victim.owner">
+              <set_value name="$att" exact="if $attacker and $attacker.owner then $attacker.owner else 'Unknown'"/>
+              <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
+              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $att + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|save_id=' + $sid"/>
+            </do_if>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>
