@@ -62,9 +62,10 @@
                                                                                                               <write_to_logbook category="general" title="if $act.$title? then $act.$title else 'Galactic News'" text="if $act.$message? then $act.$message else ''"/>
                                                                                                             </do_elseif>
 
-                                                                                                            <!-- (4) SPEC 3.3-B economy: a war phase makes a LASTING change to a faction's economy by adding/
-                                                                                                                 removing wares at one of its stations. find_station(owner) -> add_wares / remove_wares. -->
-                                                                                                            <do_elseif value="$type == 'economy'">
+                                                                                                            <!-- (4) ECONOMY transfer — GUARDED (Codex anti-cheat hardening): only fires for an EARNED transfer
+                                                                                                                 (player-contract fulfilment / owned-budget draw, #63) that sets $act.$earned=='true'. A raw decision
+                                                                                                                 dispatch (no earned marker) can NEVER mint/skim wares — it falls through to the unhandled branch. -->
+                                                                                                            <do_elseif value="$type == 'economy' and $act.$earned? and $act.$earned == 'true'">
                                                                                                               <set_value name="$efid" exact="if $act.$faction? then $act.$faction else ''"/>
                                                                                                               <set_value name="$eware" exact="if $act.$ware? then $act.$ware else 'energycells'"/>
                                                                                                               <set_value name="$eamt" exact="if $act.$amount? then $act.$amount else 5000"/>
