@@ -527,58 +527,69 @@ function AI_Influence.SyncFleets(saveId)
     log("fleets sync " .. tostring(#fleets) .. " factions")
 end
 
--- ---- economy: per-faction station rollup (vanilla GetContainedStationsByOwner) -----------------
--- Heavy, so throttled to ~120s off the relations heartbeat. Per economic faction: enumerate stations,
--- union products (outputs) + allresources (inputs); key_needs = inputs it does NOT produce itself.
--- POSTs {production_health,key_needs,shortages,market_status} to /api/economy. Grounded on unpacked
--- vanilla (GetContainedStationsByOwner; GetComponentData station "products"/"allresources"; GetWareData).
+-- ---- economy: per-STATION capture, round-robin (vanilla GetContainedStationsByOwner) ------------
+-- #54: emit ONE record per station to /v1/economy/stations; the bridge ROLLUP derives shortages/key_needs/
+-- production_health/market_status from the accumulated table. We round-robin ONE faction + a bounded slice
+-- per call so a full sweep amortizes over heartbeats — the C-API runs on the UI thread, and a paranid-sized
+-- 165-station sweep in a single tick would stutter the game (canon "throttled incremental indexer"). Reads are
+-- the Lua-FFI equivalent of DeadAir's MD economy reads (see the x4-reference-mods skill): GetComponentData st
+-- products/allresources/sector/macro/name/idcode (all proven in-mod). PK (save_id, station_id) = upsert.
 local ECON_FACTIONS = {"argon","antigone","alliance","teladi","ministry","paranid","holyorder","split","freesplit","scaleplate","xenon","khaak"}
-local function aic_wareName(w)
-    local ok, nm = pcall(function() return GetWareData(w, "name") end)
-    return (ok and nm and nm ~= "") and tostring(nm) or tostring(w)
-end
-local function aic_collectWares(station, field, out)
+local ECON_STATION_CAP = 60
+local function aic_wareList(station, field)
+    local out, seen = {}, {}
     pcall(function()
         local list = GetComponentData(station, field)
         if type(list) == "table" then
             for _, w in ipairs(list) do
                 local ware = (type(w) == "table") and (w.ware or w.id or w[1]) or w
-                if ware and ware ~= "" then out[tostring(ware)] = true end
+                ware = ware and tostring(ware) or nil
+                if ware and ware ~= "" and not seen[ware] then seen[ware] = true; out[#out + 1] = ware end
             end
         end
     end)
+    return out
 end
 function AI_Influence.SyncEconomy(saveId)
-    for _, fid in ipairs(ECON_FACTIONS) do
-        pcall(function()
-            local stations = GetContainedStationsByOwner(fid, nil, true)
-            local nst = (type(stations) == "table") and #stations or 0
-            if nst > 0 then
-                local prod, needs = {}, {}
-                for _, st in ipairs(stations) do
-                    aic_collectWares(st, "products", prod)
-                    aic_collectWares(st, "allresources", needs)
-                end
-                local key_needs = {}
-                for w in pairs(needs) do if not prod[w] then key_needs[#key_needs + 1] = aic_wareName(w) end end
-                local nprod = 0; for _ in pairs(prod) do nprod = nprod + 1 end
-                local production_health = math.min(1.0, nst / 20.0)
-                local market_status = (nprod > #key_needs) and "exporter" or ((#key_needs > 0) and "importer" or "neutral")
-                local req = newRequest("POST")
-                if req then
-                    -- 1i: shortages must be ACTUAL shortfalls {ware:severity}, not an echo of key_needs.
-                    -- Real severity needs per-station storage reads (deferred); send empty until then.
-                    local body = { save_id = (saveId and saveId ~= "") and saveId or "unindexed", faction_id = fid,
-                        production_health = production_health, key_needs = key_needs, shortages = {},
-                        market_status = market_status }
-                    req:setUrl(BRIDGE_URL .. "/api/economy")
-                    req:setBody((json and json.encode) and json.encode(body) or body)
-                    req:send(function(resp, err) if err then log("economy err: " .. tostring(err)) end end)
-                end
-                log("economy " .. fid .. " stations=" .. tostring(nst) .. " needs=" .. tostring(#key_needs))
-            end
-        end)
+    local sid = (saveId and saveId ~= "") and saveId or "unindexed"
+    AI_Influence._econFac = AI_Influence._econFac or 1
+    local fid = ECON_FACTIONS[AI_Influence._econFac]
+    local function advanceFaction()
+        AI_Influence._econFac = (AI_Influence._econFac % #ECON_FACTIONS) + 1
+        AI_Influence._econOff = 0
     end
+    pcall(function()
+        local stations = GetContainedStationsByOwner(fid, nil, true)
+        local total = (type(stations) == "table") and #stations or 0
+        if total == 0 then advanceFaction(); return end
+        local off = AI_Influence._econOff or 0
+        if off >= total then off = 0 end
+        local last = math.min(off + ECON_STATION_CAP, total)
+        local recs = {}
+        for i = off + 1, last do
+            local st = stations[i]
+            local rec = { faction_id = fid }
+            local code; pcall(function() code = GetComponentData(st, "idcode") end)
+            rec.station_id = (code and tostring(code) ~= "") and tostring(code) or tostring(st)
+            pcall(function() rec.sector_id = tostring(GetComponentData(st, "sector") or "") end)
+            pcall(function() rec.station_name = tostring(GetComponentData(st, "name") or "") end)
+            pcall(function() rec.station_type = tostring(GetComponentData(st, "macro") or "") end)
+            rec.products = aic_wareList(st, "products")
+            rec.needs = aic_wareList(st, "allresources")
+            recs[#recs + 1] = rec
+        end
+        if #recs > 0 then
+            local req = newRequest("POST")
+            if req then
+                local body = { save_id = sid, stations = recs, rollup = true }
+                req:setUrl(BRIDGE_URL .. "/v1/economy/stations")
+                req:setBody((json and json.encode) and json.encode(body) or body)
+                req:send(function(resp, err) if err then log("economy err: " .. tostring(err)) end end)
+            end
+            log("economy " .. fid .. " stations " .. tostring(off) .. ".." .. tostring(last) .. "/" .. tostring(total) .. " sent=" .. tostring(#recs))
+        end
+        if last >= total then advanceFaction() else AI_Influence._econOff = last end
+    end)
 end
 
 -- ---- per-NPC skills: read the live crew skills the way the vanilla crew menu does ---------------
