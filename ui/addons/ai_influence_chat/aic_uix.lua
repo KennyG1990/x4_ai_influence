@@ -205,7 +205,8 @@ function AI_Influence.ReportHostile(param)
     end
     local body = { save_id = ctx.save_id, events = { {
         attacker_faction = ctx.attacker, victim_faction = ctx.victim, sector = ctx.sector,
-        event_kind = ctx.kind or "ship_destroyed", magnitude = tonumber(ctx.magnitude) or 1, source = "game" } } }
+        event_kind = ctx.kind or "ship_destroyed", magnitude = tonumber(ctx.magnitude) or 1,
+        linked_order_id = ctx.order, source = "game" } } }  -- #67: attribute the loss to the raid order
     req:setUrl(BRIDGE_URL .. "/v1/hostile_events")
     req:setBody((json and json.encode) and json.encode(body) or body)
     log("hostile_event POST " .. tostring(ctx.attacker) .. " vs " .. tostring(ctx.victim) .. " @ " .. tostring(ctx.sector))

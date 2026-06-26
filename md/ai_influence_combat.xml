@@ -28,7 +28,9 @@
             <set_value name="$victim" exact="event.param"/>
             <do_if value="$attacker and $victim and $attacker.owner and $victim.owner">
               <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
-              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $attacker.owner + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|save_id=' + $sid"/>
+              <!-- #67: the killer is OUR watched ship; read the raid order tag it carries (empty if untagged). -->
+              <set_value name="$oid" exact="if $attacker.$AIINF_order? then $attacker.$AIINF_order else ''"/>
+              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $attacker.owner + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|order=' + $oid + '|save_id=' + $sid"/>
             </do_if>
           </actions>
         </cue>
@@ -44,7 +46,9 @@
             <do_if value="$victim and $victim.owner">
               <set_value name="$att" exact="if $attacker and $attacker.owner then $attacker.owner else 'Unknown'"/>
               <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
-              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $att + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|save_id=' + $sid"/>
+              <!-- #67: the destroyed ship is OUR watched ship; read the raid order tag it carried. -->
+              <set_value name="$oid" exact="if $victim.$AIINF_order? then $victim.$AIINF_order else ''"/>
+              <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $att + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|order=' + $oid + '|save_id=' + $sid"/>
             </do_if>
           </actions>
         </cue>

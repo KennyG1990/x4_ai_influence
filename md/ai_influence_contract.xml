@@ -116,6 +116,12 @@
                                                                                                                   <!-- #66: watch this ordered ship for REAL combat -> hostile_events (event ledger). -->
                                                                                                                   <do_if value="md.ai_influence_combat.State.$Watched?">
                                                                                                                     <add_to_group groupname="md.ai_influence_combat.State.$Watched" object="$oship"/>
+                                                                                                                    <!-- #67: tag this ship with a UNIQUE order id (idcode-keyed) so the kill/loss it produces
+                                                                                                                         links back to THIS specific raid order, not just the faction pair. Component-scoped MD var
+                                                                                                                         rides on the ship object and is read by the combat cues on the real kill/destroy event. -->
+                                                                                                                    <set_value name="$oid" exact="'ord:' + $okind + ':' + $ofid + ':' + $otgt + ':' + $oship.idcode"/>
+                                                                                                                    <set_value name="$oship.$AIINF_order" exact="$oid"/>
+                                                                                                                    <debug_text text="'[AIINF] order_tag ' + $oid" filter="general"/>
                                                                                                                   </do_if>
                                                                                                                 </do_if>
                                                                                                               </do_if>
