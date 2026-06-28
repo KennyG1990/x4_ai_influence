@@ -600,12 +600,22 @@ end
 -- the bridge as prompt_vars.skills. pcall-wrapped so a bad/stale component can never break the chat.
 AI_Influence._pendingSkills = nil
 function AI_Influence.ReadNpcSkills(component)
-    -- A3b PROBE (2026-06-27): capture + LOG the NPC component id at conversation start. The binding plan assumed
-    -- this id is a stable persistent key, but X4 UniverseIDs are runtime handles (relations-sync re-reads them
-    -- every tick precisely because they don't persist). Before committing to it as the cross-reload memory key,
-    -- log it so an in-game chat -> save/reload -> chat-again comparison tells us if it survives. Safe/additive.
+    -- A3b PHASE-0 PROBE (2026-06-27): ONE in-game chat -> FULL save+exit+reload -> chat-again answers BOTH
+    -- questions from the identity-binding spec: Q1 does X4 expose a STABLE person idcode? Q2 does the runtime
+    -- component id survive save/reload? Log the raw component id (Q2) PLUS candidate persistent fields
+    -- (idcode/name/owner) (Q1), each pcall-guarded so a missing/invalid field can never break the chat. Compare
+    -- the "A3b probe =>" line before vs after a full save+reload to choose Path A/B/C.
     AI_Influence._pendingNpcId = tostring(component)
-    log("A3b npc_id probe => " .. tostring(component))
+    pcall(function()
+        local pid = ConvertStringToLuaID(tostring(component))
+        local function f(field)
+            local v = nil
+            pcall(function() v = GetComponentData(pid, field) end)
+            return tostring(v)
+        end
+        log("A3b probe => raw=" .. tostring(component) .. " idcode=" .. f("idcode")
+            .. " name=" .. f("name") .. " owner=" .. f("owner"))
+    end)
     local skills = nil
     pcall(function()
         local luaid = ConvertStringToLuaID(tostring(component))
