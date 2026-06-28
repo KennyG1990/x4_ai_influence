@@ -171,6 +171,31 @@ function AI_Influence.RequestSuggestions(param)
     end)
 end
 
+-- P1 (#113): fetch suggestions as a {label,line} LIST for the chat WINDOW's choice buttons. The MD
+-- native wheel uses RequestSuggestions (AddUITriggeredEvent → On_suggestions); the window needs the
+-- list directly via a callback. Same GET, conversation-aware server-side (#112).
+function AI_Influence.FetchSuggestions(faction_id, target_name, save_id, cb)
+    local req = newRequest("GET")
+    if not req then return end
+    local function enc(s) return (string.gsub(tostring(s or ""), "[^%w%-_%.]", function(c)
+        return string.format("%%%02X", string.byte(c)) end)) end
+    req:setUrl(BRIDGE_URL .. "/api/suggest?save_id=" .. enc(save_id)
+        .. "&faction_id=" .. enc(faction_id) .. "&npc_name=" .. enc(target_name))
+    req:send(function(resp, err)
+        if err then return end
+        local status = (resp and resp.getStatus) and resp:getStatus() or 0
+        if status ~= 200 then return end
+        local content = resp:getJson()
+        local s = content and content.suggestions
+        if type(s) ~= "table" then return end
+        local list = {}
+        for i = 1, #s do
+            list[#list + 1] = { label = s[i].label or s[i].line or "", line = s[i].line or s[i].label or "" }
+        end
+        if cb then pcall(cb, list) end
+    end)
+end
+
 local function onRequestSuggest(_, param) AI_Influence.RequestSuggestions(param) end
 
 -- ---- world-model write-back: report a relation the dispatcher just changed in-game --------------
@@ -671,6 +696,8 @@ local function handleUpdates(success, updates)
                 menu.history = menu.history or {}
                 table.insert(menu.history, { role = "assistant", text = text })
                 if menu.active and menu.display then menu.display() end
+                -- P1 (#113): refresh the choice buttons from the now-extended conversation (the loop).
+                if menu.requestSuggestions then menu.requestSuggestions() end
             end
         end
 
@@ -791,6 +818,11 @@ onOpenCommLink = function(_, params)
             save_id = context["save_id"] or context["$save_id"],
             full_context = context,
         }
+        -- P1 (#113): a fresh conversation starts in CHOICE mode (not typing); presets show instantly and
+        -- the LLM batch arrives via FetchSuggestions. Reset per open so a new NPC doesn't inherit stale choices.
+        termMenu.typing = false
+        termMenu.suggestions = {}
+        if termMenu.requestSuggestions then termMenu.requestSuggestions() end
         -- ME-wheel opener: if the player picked a suggested line, queue it to auto-send once the
         -- window is active (the poll tick does the send, so it waits for the engine to open it).
         local initial = context["initial"] or context["$initial"]

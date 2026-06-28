@@ -35,6 +35,8 @@ X4_Terminal_Menu = {
     editboxText = "",
     npcState = "normal",
     history = {},
+    suggestions = {},   -- P1 (#113): {label,line} choices rendered as BUTTONS (the conversation flows by picking)
+    typing = false,     -- the edit-box is shown ONLY when true; reached solely via "Type my own message"
 }
 local menu = X4_Terminal_Menu
 
@@ -84,6 +86,48 @@ function menu.showMenuCallback(_, context)
     menu.onShowMenu()
 end
 
+-- P1 (#113): the conversation flows through CHOICE BUTTONS, not a forced text box. Presets show
+-- instantly; the LLM batch (AI_Influence.FetchSuggestions, conversation-aware via #112) replaces them
+-- and refreshes after each reply. The edit-box is opt-in via "Type my own message".
+menu.PRESET_CHOICES = {
+    { label = "Ask their situation", line = "What is the situation here?" },
+    { label = "Who are you?", line = "Who are you, and what is your posting here?" },
+    { label = "Any news?", line = "Have you heard any news lately?" },
+}
+
+function menu.currentChoices()
+    if menu.suggestions and #menu.suggestions > 0 then return menu.suggestions end
+    return menu.PRESET_CHOICES
+end
+
+function menu.requestSuggestions()
+    local bridge = rawget(_G, "AI_Influence")
+    if not (bridge and bridge.FetchSuggestions) then return end
+    local ctx = menu.currentContext or {}
+    pcall(function()
+        bridge.FetchSuggestions(ctx.faction, ctx.target, ctx.save_id, function(list)
+            if type(list) == "table" and #list > 0 then
+                menu.suggestions = list
+                if menu.active and menu.display then menu.display() end
+            end
+        end)
+    end)
+end
+
+function menu.pickChoice(i)
+    local choices = menu.currentChoices()
+    local c = choices and choices[i]
+    if not (c and c.line and c.line ~= "") then return end
+    menu.suggestions = {}          -- show presets while the NPC "thinks"; handleUpdates refetches after the reply
+    menu.onInput(c.line)           -- send the chosen line (same path as a typed message)
+    -- NO fetch here: the single refresh happens after the NPC reply (aic_uix handleUpdates) — one fetch/turn.
+end
+
+function menu.startTyping()
+    menu.typing = true
+    if menu.active and menu.display then menu.display() end
+end
+
 -- Render the frame + widget rows (UIBuilder standard-template body).
 function menu.display()
     refreshHelper()
@@ -131,20 +175,38 @@ function menu.display()
         row[1]:setColSpan(2):createText(who .. ":  " .. tostring(item.text), { wordwrap = true })
     end
 
-    -- input widget + SEND button
-    row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
-    row[1]:createEditBox({ height = Helper.standardButtonHeight, defaultText = "Enter message...", maxChars = 255, selectTextOnActivation = true })
-    row[1].handlers.onTextChanged = function(_, text, textchanged) if textchanged and text ~= nil then menu.editboxText = text end end
-    row[1].handlers.onEditBoxDeactivated = function(_, text, textchanged, isconfirmed)
-        if textchanged and text ~= nil then menu.editboxText = text end
-        if isconfirmed then menu.onInput(text) end
+    -- P1 (#113): CHOICE BUTTONS — the conversation advances by PICKING a line, never by being forced to
+    -- type. Each row is a suggestion (or instant preset); clicking sends it and the choices refresh.
+    local choices = menu.currentChoices()
+    for ci = 1, 3 do
+        local c = choices[ci]
+        local label = c and (c.label or c.line) or "..."
+        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
+        row[1]:setColSpan(2):createButton({ active = (c ~= nil) }):setText(tostring(label), { halign = "left" })
+        if c then row[1].handlers.onClick = function() menu.pickChoice(ci) end end
     end
-    row[2]:createButton({ active = true }):setText("SEND", { halign = "center" })
-    row[2].handlers.onClick = function() menu.onInput(menu.editboxText) end
 
-    -- CLOSE button
+    if menu.typing then
+        -- Opt-in free text (only reached via "Type my own message"); confirming returns to choices.
+        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
+        row[1]:createEditBox({ height = Helper.standardButtonHeight, defaultText = "Type your message...", maxChars = 255, selectTextOnActivation = true })
+        row[1].handlers.onTextChanged = function(_, text, textchanged) if textchanged and text ~= nil then menu.editboxText = text end end
+        row[1].handlers.onEditBoxDeactivated = function(_, text, textchanged, isconfirmed)
+            if textchanged and text ~= nil then menu.editboxText = text end
+            if isconfirmed then menu.typing = false; menu.suggestions = {}; menu.onInput(text) end
+        end
+        row[2]:createButton({ active = true }):setText("SEND", { halign = "center" })
+        row[2].handlers.onClick = function() menu.typing = false; menu.suggestions = {}; menu.onInput(menu.editboxText) end
+    else
+        -- The ONLY path into the text box — picking a choice never forces it.
+        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
+        row[1]:setColSpan(2):createButton({ active = true }):setText("Type my own message", { halign = "center" })
+        row[1].handlers.onClick = function() menu.startTyping() end
+    end
+
+    -- GOODBYE — ends the conversation.
     row = ftable:addRow(true, { bgColor = Color["row_background"] })
-    row[1]:setColSpan(2):createButton({ active = true }):setText("CLOSE", { halign = "center" })
+    row[1]:setColSpan(2):createButton({ active = true }):setText("Goodbye", { halign = "center" })
     row[1].handlers.onClick = function() menu.closeMenu() end
 
     menu.frame:display()
