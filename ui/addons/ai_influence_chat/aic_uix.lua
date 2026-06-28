@@ -758,10 +758,22 @@ onOpenCommLink = function(_, params)
             context["skills"] = AI_Influence._pendingSkills
         end
         -- I1: ride the identity evidence to the bridge alongside skills (consumed in
-        -- player2_client.npc_complete -> rebind_session). Only set what was actually readable.
+        -- player2_client.npc_complete -> rebind_session). Read macro/sector DIRECTLY here as a fallback so
+        -- it does not depend on AIChat.npc_skills having fired before AIChat.open (event-order independent).
+        if (not AI_Influence._pendingNpcMacro) and AI_Influence._pendingNpcId then
+            pcall(function()
+                local pid3 = ConvertStringToLuaID(tostring(AI_Influence._pendingNpcId))
+                local mc; pcall(function() mc = GetComponentData(pid3, "macro") end)
+                if mc ~= nil and tostring(mc) ~= "nil" and tostring(mc) ~= "" then AI_Influence._pendingNpcMacro = tostring(mc) end
+                local sc; pcall(function() sc = GetComponentData(pid3, "sector") end)
+                if sc ~= nil and tostring(sc) ~= "nil" and tostring(sc) ~= "" then AI_Influence._pendingNpcSector = tostring(sc) end
+            end)
+        end
         if AI_Influence._pendingNpcMacro then context["macro"] = AI_Influence._pendingNpcMacro end
         if AI_Influence._pendingNpcSector and not context["sector"] then context["sector"] = AI_Influence._pendingNpcSector end
-        if AI_Influence._pendingNpcId then context["runtime_component_id"] = AI_Influence._pendingNpcId end
+        if AI_Influence._pendingNpcId then context["runtime_component_id"] = tostring(AI_Influence._pendingNpcId) end
+        log("AIChat.open folded identity evidence => macro=" .. tostring(AI_Influence._pendingNpcMacro)
+            .. " runtime=" .. tostring(AI_Influence._pendingNpcId) .. " sector=" .. tostring(context["sector"]))
         termMenu.currentContext = {
             faction = context["faction_id"] or context["$faction_id"] or "argon",
             target  = context["target_name"] or context["$target_name"] or "Faction Officer",
