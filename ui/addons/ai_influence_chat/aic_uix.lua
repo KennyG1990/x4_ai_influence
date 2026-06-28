@@ -613,8 +613,13 @@ function AI_Influence.ReadNpcSkills(component)
             pcall(function() v = GetComponentData(pid, field) end)
             return tostring(v)
         end
+        -- I1 GROUND (2026-06-28): idcode came back EMPTY in #99, so before building the evidence
+        -- pipeline, discover which OTHER fields are runtime-readable for a PERSON component. Appended to
+        -- the same "A3b probe =>" line so the Forge parse-log endpoint returns them in `.line`.
         log("A3b probe => raw=" .. tostring(component) .. " idcode=" .. f("idcode")
-            .. " name=" .. f("name") .. " owner=" .. f("owner"))
+            .. " name=" .. f("name") .. " owner=" .. f("owner")
+            .. " macro=" .. f("macro") .. " code=" .. f("code") .. " class=" .. f("class")
+            .. " container=" .. f("container") .. " commander=" .. f("commander") .. " sector=" .. f("sector"))
     end)
     local skills = nil
     pcall(function()
@@ -628,6 +633,18 @@ function AI_Influence.ReadNpcSkills(component)
     end)
     AI_Influence._pendingSkills = skills
     log("npc_skills read => " .. (skills and "ok" or "empty"))
+    -- I1 (2026-06-28): capture the runtime-readable identity EVIDENCE. Grounded: macro + sector ARE
+    -- readable for a person; code/class/commander are nil. macro is the corroborator that lifts a
+    -- re-encountered NPC tentative->bound. Stashed like skills, folded into context at window open.
+    AI_Influence._pendingNpcMacro = nil
+    AI_Influence._pendingNpcSector = nil
+    pcall(function()
+        local pid2 = ConvertStringToLuaID(tostring(component))
+        local mc; pcall(function() mc = GetComponentData(pid2, "macro") end)
+        if mc ~= nil and tostring(mc) ~= "nil" and tostring(mc) ~= "" then AI_Influence._pendingNpcMacro = tostring(mc) end
+        local sc; pcall(function() sc = GetComponentData(pid2, "sector") end)
+        if sc ~= nil and tostring(sc) ~= "nil" and tostring(sc) ~= "" then AI_Influence._pendingNpcSector = tostring(sc) end
+    end)
 end
 
 local function onNpcSkills(_, component) AI_Influence.ReadNpcSkills(component) end
@@ -740,6 +757,11 @@ onOpenCommLink = function(_, params)
         if AI_Influence._pendingSkills and next(AI_Influence._pendingSkills) then
             context["skills"] = AI_Influence._pendingSkills
         end
+        -- I1: ride the identity evidence to the bridge alongside skills (consumed in
+        -- player2_client.npc_complete -> rebind_session). Only set what was actually readable.
+        if AI_Influence._pendingNpcMacro then context["macro"] = AI_Influence._pendingNpcMacro end
+        if AI_Influence._pendingNpcSector and not context["sector"] then context["sector"] = AI_Influence._pendingNpcSector end
+        if AI_Influence._pendingNpcId then context["runtime_component_id"] = AI_Influence._pendingNpcId end
         termMenu.currentContext = {
             faction = context["faction_id"] or context["$faction_id"] or "argon",
             target  = context["target_name"] or context["$target_name"] or "Faction Officer",
