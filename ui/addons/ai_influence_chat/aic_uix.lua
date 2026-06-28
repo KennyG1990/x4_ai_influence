@@ -600,6 +600,12 @@ end
 -- the bridge as prompt_vars.skills. pcall-wrapped so a bad/stale component can never break the chat.
 AI_Influence._pendingSkills = nil
 function AI_Influence.ReadNpcSkills(component)
+    -- A3b PROBE (2026-06-27): capture + LOG the NPC component id at conversation start. The binding plan assumed
+    -- this id is a stable persistent key, but X4 UniverseIDs are runtime handles (relations-sync re-reads them
+    -- every tick precisely because they don't persist). Before committing to it as the cross-reload memory key,
+    -- log it so an in-game chat -> save/reload -> chat-again comparison tells us if it survives. Safe/additive.
+    AI_Influence._pendingNpcId = tostring(component)
+    log("A3b npc_id probe => " .. tostring(component))
     local skills = nil
     pcall(function()
         local luaid = ConvertStringToLuaID(tostring(component))
