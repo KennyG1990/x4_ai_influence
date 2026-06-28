@@ -38,10 +38,11 @@
         <set_value name="$npcs" exact="''"/>
         <find_station groupname="$stations" space="player.sector" multiple="true"/>
         <do_for_each name="$st" in="$stations">
-          <do_if value="$st.controlentity? and $st.controlentity.knownname? and $st.owner?">
-            <set_value name="$npcs" exact="$npcs + $st.controlentity.knownname + '~' + $st.owner.knownname + ';'"/>
+          <do_if value="$st.manager? and $st.manager.knownname? and $st.owner?">
+            <set_value name="$npcs" exact="$npcs + $st.manager.knownname + '~' + $st.owner.knownname + ';'"/>
           </do_if>
         </do_for_each>
+        <debug_text text="'AIINF census: stations=' + $stations.count + ' npcs=[' + $npcs + ']'" filter="general"/>
         <do_if value="$npcs != ''">
           <raise_lua_event name="'AIChat.index_npcs'" param="'save_id=' + $sid + '|player=Player|npcs=' + $npcs"/>
         </do_if>
@@ -56,7 +57,8 @@
       </conditions>
       <actions>
         <run_actions ref="md.ai_influence_worldsync.Do_sync"/>
-        <run_actions ref="md.ai_influence_worldsync.Census_npcs"/>
+        <!-- Census_npcs DORMANT pending grounded station-NPC accessor (controlentity/manager both empty for AI
+             stations). Re-enable this run_actions once Codex finds the person-enumeration primitive. -->
       </actions>
     </cue>
     <cue name="Sync_periodic" namespace="this">
@@ -68,7 +70,7 @@
           <delay exact="15s" />
           <actions>
             <run_actions ref="md.ai_influence_worldsync.Do_sync"/>
-            <run_actions ref="md.ai_influence_worldsync.Census_npcs"/>
+            <!-- Census_npcs DORMANT pending grounded station-NPC accessor — see note above. -->
             <reset_cue cue="Tick"/>
           </actions>
         </cue>
