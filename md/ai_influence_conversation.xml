@@ -26,12 +26,15 @@
         <do_elseif value="event.object.role? and event.object.role == entityrole.service">
           <set_value name="md.ai_influence_conversation.State.$role" exact="'service crew'"/>
         </do_elseif>
-        <set_value name="md.ai_influence_conversation.State.$ready" exact="false"/>
-        <set_value name="$sid" exact="'game_unset'"/>
-        <do_if value="md.ai_influence_chat.Save_identity.$save_uuid?">
-          <set_value name="$sid" exact="'game_' + md.ai_influence_chat.Save_identity.$save_uuid"/>
-        </do_if>
-        <raise_lua_event name="'AIChat.suggest'" param="'faction_id=' + md.ai_influence_conversation.State.$facname + '|target_name=' + md.ai_influence_conversation.State.$npcname + '|save_id=' + $sid"/>
+        <!-- Instant PRESET openers so the first wheel never shows a 'thinking' placeholder. The LLM batch
+             (On_suggestions, requested on each Speak_menu open) overwrites these with conversation-aware lines. -->
+        <set_value name="md.ai_influence_conversation.State.$l1" exact="'Ask their situation'"/>
+        <set_value name="md.ai_influence_conversation.State.$l2" exact="'Who are you?'"/>
+        <set_value name="md.ai_influence_conversation.State.$l3" exact="'Any news?'"/>
+        <set_value name="md.ai_influence_conversation.State.$t1" exact="'What is the situation here?'"/>
+        <set_value name="md.ai_influence_conversation.State.$t2" exact="'Who are you, and what is your posting here?'"/>
+        <set_value name="md.ai_influence_conversation.State.$t3" exact="'Have you heard any news lately?'"/>
+        <set_value name="md.ai_influence_conversation.State.$ready" exact="true"/>
         <add_player_choice_sub section="AIInf_Speak" text="'Speak to AI'"/>
         <add_player_choice_sub section="AIInf_ForceWar" text="'[TEST] Declare war on me'"/>
       </actions>
@@ -74,14 +77,15 @@
                                                                                                                                                                                                                 </check_any>
       </conditions>
       <actions>
-        <do_if value="md.ai_influence_conversation.State.$ready">
-          <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-          <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-          <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
-        </do_if>
-        <do_else>
-          <add_player_choice_sub section="AIInf_Speak" text="'(thinking — pick to refresh suggestions)'"/>
-        </do_else>
+        <!-- Always show 3 real choices: presets are seeded at conversation start, then the LLM batch
+             (On_suggestions) overwrites $l1..$t3 with conversation-aware lines — no 'thinking' placeholder. -->
+        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
+        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
+        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
+        <!-- Refresh suggestions from the CURRENT conversation each time the wheel opens, so subsequent
+             options follow what was just said (the server reads the recent turns). The displayed choices
+             stay (presets / last batch) until the new batch lands via On_suggestions. -->
+        <raise_lua_event name="'AIChat.suggest'" param="'faction_id=' + md.ai_influence_conversation.State.$facname + '|target_name=' + md.ai_influence_conversation.State.$npcname + '|save_id=' + (if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset')"/>
         <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
         <add_player_choice_return text="'Back'"/>
       </actions>

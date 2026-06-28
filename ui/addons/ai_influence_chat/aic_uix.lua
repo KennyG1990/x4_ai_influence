@@ -774,6 +774,15 @@ onOpenCommLink = function(_, params)
         if AI_Influence._pendingNpcId then context["runtime_component_id"] = tostring(AI_Influence._pendingNpcId) end
         log("AIChat.open folded identity evidence => macro=" .. tostring(AI_Influence._pendingNpcMacro)
             .. " runtime=" .. tostring(AI_Influence._pendingNpcId) .. " sector=" .. tostring(context["sector"]))
+        -- BUGFIX (2026-06-28): the window transcript (termMenu.history) is per-window and was NEVER reset,
+        -- so it accumulated EVERY NPC's turns and display() relabeled them with whoever you now talk to.
+        -- Reset the VISIBLE transcript when the conversation partner CHANGES. Bridge memory stays isolated
+        -- per NPC (separate npc_key), and the new NPC's recall still rides via the LLM — this only clears
+        -- the on-screen history. Same-NPC re-entry keeps its transcript.
+        local _newTarget = context["target_name"] or context["$target_name"] or "Faction Officer"
+        if (not termMenu.currentContext) or termMenu.currentContext.target ~= _newTarget then
+            termMenu.history = {}
+        end
         termMenu.currentContext = {
             faction = context["faction_id"] or context["$faction_id"] or "argon",
             target  = context["target_name"] or context["$target_name"] or "Faction Officer",
