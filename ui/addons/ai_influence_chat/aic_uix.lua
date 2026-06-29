@@ -140,6 +140,99 @@ end
 
 local function onIndexNpcs(_, param) AI_Influence.IndexNpcs(param) end
 
+-- ---- EPIC I probe: Blackboard persistent NPC identity (ChemODun object-ref + string-key + npctemplate) -------
+-- On each conversation open, test two durable-identity payloads on the conversation NPC and POST observations to
+-- the bridge (which derives the verdict). PRIMARY: store the NPC OBJECT REFERENCE on the PLAYER scope keyed by a
+-- stable name|faction token (X4 should remap the pointer on reload). SECONDARY: a plain string key on the NPC
+-- itself. Also capture npctemplate (Tier-2 fallback). Fully guarded — a wrong assumption records a failed read,
+-- never crashes the chat. The bridge correlates: same token read under ≥2 distinct runtime ids = survived a reload.
+pcall(function() ffi.cdef [[ UniverseID GetPlayerID(void); ]] end)
+function AI_Influence.BlackboardProbe(ctx)
+    ctx = ctx or {}
+    local okp = pcall(function()
+        if not (SetNPCBlackboard and GetNPCBlackboard and ConvertStringToLuaID) then return end
+        local rawid = AI_Influence._pendingNpcId
+        if not rawid then return end
+        local npc = ConvertStringToLuaID(tostring(rawid))
+        local name = tostring(ctx.target_name or ctx["$target_name"] or ctx.name or "")
+        local faction = tostring(ctx.faction_id or ctx["$faction_id"] or ctx.faction or "")
+        local save_id = tostring(ctx.save_id or ctx["$save_id"] or "")
+        local strkey = "$aic_persistent_npc_key"
+
+        local tmpl = ""
+        pcall(function() tmpl = tostring(GetComponentData(npc, "npctemplate") or "") end)
+
+        -- PERSISTENT TOKEN (candidate PRIMARY identity key): read the NPC's own durable key; if absent, MINT a
+        -- UNIQUE one and write it. Duplicate-safe BY DESIGN — the mint uses this NPC's current runtime id (unique
+        -- per NPC at first encounter) + a random salt, so two same-name crew get DIFFERENT tokens on their own
+        -- blackboards. Once written it persists across reload (proven), so we never re-mint.
+        local existing = nil
+        pcall(function() existing = GetNPCBlackboard(npc, strkey) end)
+        local s_phase, s_value, s_write, s_read
+        if existing == nil or existing == 0 or existing == "" then
+            s_value = "aic_" .. tostring(rawid) .. "_" .. tostring(math.random(100000, 999999))
+            pcall(function() SetNPCBlackboard(npc, strkey, s_value) end)
+            local rb = nil; pcall(function() rb = GetNPCBlackboard(npc, strkey) end)
+            s_write, s_read, s_phase = true, (tostring(rb) == s_value), "write"
+        else
+            s_value, s_write, s_read, s_phase = tostring(existing), false, true, "read"
+        end
+        local token = string.gsub(tostring(s_value), "[^%w]", "_")   -- bb-key-safe form of the unique token
+        local objkey = "$aic_obj_" .. token
+
+        -- PRIMARY: object reference stored on the durable PLAYER scope, keyed by the UNIQUE token (no collision).
+        local o_value, o_write, o_read, o_match = "objref_" .. token, false, false, false
+        local player = nil
+        pcall(function() player = ConvertStringToLuaID(tostring(C.GetPlayerID())) end)
+        if player then
+            pcall(function() SetNPCBlackboard(player, objkey, npc); o_write = true end)
+            local restored = nil
+            pcall(function() restored = GetNPCBlackboard(player, objkey) end)
+            if restored ~= nil and restored ~= 0 and tostring(restored) ~= "" then
+                o_read = true
+                pcall(function()
+                    local rn = GetComponentData(restored, "name")
+                    o_match = (tostring(rn) == name) and (name ~= "")
+                end)
+            end
+        end
+
+        local function postRow(row)
+            local req = newRequest("POST"); if not req then return end
+            row.save_id = save_id; row.runtime_component_id = tostring(rawid)
+            row.npc_name = name; row.faction = faction
+            row.role = tostring(ctx.npc_role or ctx["$npc_role"] or ctx.role or "")
+            row.ship_or_station = tostring(ctx.ship or ""); row.sector = tostring(ctx.sector or "")
+            row.npctemplate = tmpl; row.target_type = "conversation_person"
+            req:setUrl(BRIDGE_URL .. "/v1/npc_identity_probe/blackboard")
+            req:setBody((json and json.encode) and json.encode(row) or row)
+            req:send(function(_, err) if err then log("bbprobe err: " .. tostring(err)) end end)
+        end
+        postRow({ phase = s_phase, payload_type = "string", blackboard_key = strkey,
+                  blackboard_value = s_value, write_success = s_write, read_success = s_read })
+        postRow({ phase = "read", payload_type = "object", blackboard_key = objkey,
+                  blackboard_value = o_value, write_success = o_write, read_success = o_read, restored_match = o_match })
+        -- Carry the token into the chat context → it rides prompt_vars to the bridge (contracts merges prompt_vars
+        -- into request.metadata), so npc_complete keys this conversation's MEMORY by the token (per-ID memory).
+        if s_value and s_value ~= "" then ctx.blackboard_key = tostring(s_value) end
+        -- WIRE: bind this NPC's identity to its durable Blackboard token (the PRIMARY key) → flips it to BOUND.
+        if s_value and s_value ~= "" then
+            local breq = newRequest("POST")
+            if breq then
+                breq:setUrl(BRIDGE_URL .. "/v1/identity/bind_blackboard")
+                breq:setBody((json and json.encode) and json.encode({
+                    save_id = save_id, name = name, faction = faction,
+                    role = tostring(ctx.npc_role or ctx["$npc_role"] or ctx.role or ""),
+                    blackboard_key = s_value, runtime_id = tostring(rawid) }) or "")
+                breq:send(function(_, err) if err then log("bbbind err: " .. tostring(err)) end end)
+            end
+        end
+        log("bbprobe name=" .. name .. " str_read=" .. tostring(s_read) .. " obj_read=" .. tostring(o_read)
+            .. " obj_match=" .. tostring(o_match) .. " tmpl=" .. tostring(tmpl))
+    end)
+    if not okp then log("bbprobe failed (guarded)") end
+end
+
 -- ---- ME-wheel suggestions: ask the bridge for short contextual openers, hand them to MD ------
 -- MD raises "AIChat.suggest" with "faction_id=..|target_name=..|save_id=.." on conversation start
 -- (pre-fetch). We GET /api/suggest and, when it returns ~4s later, push the {label,line} list back
@@ -417,11 +510,15 @@ function AI_Influence.DrainPlayerComms(saveId)
         if jerr or not content or not content.comms or not AddUITriggeredEvent then return end
         for _, c in ipairs(content.comms) do
             if type(c) == "table" then
+                -- M5: keep the param3 table SMALL (4 keys). X4's AddUITriggeredEvent->event.param3 round-trip
+                -- can silently drop keys past a small count; after switching to write_incoming_message we no
+                -- longer need faction/category here, so carry only what the cue uses. (sender_npc_key/tx_id for
+                -- the M5b-2 Reply hook will ride a SEPARATE event to avoid the cap.)
                 local tp = {
                     title = tostring(c.title or "Incoming Transmission"),
                     body = tostring(c.body or ""),
-                    faction = tostring(c.faction or ""),
-                    category = tostring(c.category or "alerts"),
+                    sender = tostring(c.sender_name or ""),
+                    priority = tostring(c.priority or "low"),
                 }
                 pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", tp) end)
             end
@@ -801,6 +898,8 @@ onOpenCommLink = function(_, params)
         if AI_Influence._pendingNpcId then context["runtime_component_id"] = tostring(AI_Influence._pendingNpcId) end
         log("AIChat.open folded identity evidence => macro=" .. tostring(AI_Influence._pendingNpcMacro)
             .. " runtime=" .. tostring(AI_Influence._pendingNpcId) .. " sector=" .. tostring(context["sector"]))
+        -- EPIC I probe: test Blackboard durable identity on this conversation NPC (guarded; records to bridge).
+        pcall(function() AI_Influence.BlackboardProbe(context) end)
         -- BUGFIX (2026-06-28): the window transcript (termMenu.history) is per-window and was NEVER reset,
         -- so it accumulated EVERY NPC's turns and display() relabeled them with whoever you now talk to.
         -- Reset the VISIBLE transcript when the conversation partner CHANGES. Bridge memory stays isolated

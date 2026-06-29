@@ -69,13 +69,18 @@
         <do_if value="$comm?">
           <set_value name="$title" exact="if $comm.$title? then $comm.$title else 'Incoming Transmission'"/>
           <set_value name="$body" exact="if $comm.$body? then $comm.$body else ''"/>
-          <set_value name="$cat" exact="if $comm.$category? then $comm.$category else 'alerts'"/>
+          <set_value name="$sender" exact="if $comm.$sender? and $comm.$sender != '' then $comm.$sender else 'Faction Command'"/>
+          <set_value name="$high" exact="if $comm.$priority? and $comm.$priority == 'high' then true else false"/>
           <do_if value="$body != ''">
-            <do_if value="$cat == 'diplomacy'">
-              <write_to_logbook category="diplomacy" title="$title" text="$body"/>
+            <!-- M5: surface as a NATIVE player message (From:&lt;sender&gt;) in the in-game Messages menu.
+                 write_incoming_message.highpriority is schema type 'boolean' (LITERAL true/false), NOT a
+                 booleanexpression — so it must be branched, not passed an expression like "$high" (that defaults
+                 to low and dumps every message into the Low-priority tab). -->
+            <do_if value="$high">
+              <write_incoming_message source="$sender" title="$title" text="$body" highpriority="true"/>
             </do_if>
             <do_else>
-              <write_to_logbook category="alerts" title="$title" text="$body"/>
+              <write_incoming_message source="$sender" title="$title" text="$body" highpriority="false"/>
             </do_else>
             <show_notification text="'Incoming transmission — ' + $title"/>
           </do_if>
