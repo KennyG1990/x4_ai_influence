@@ -48,6 +48,38 @@
         </do_if>
       </actions>
     </library>
+    <!-- CONTROL-POST OFFICERS (defence + engineer): the NON-default station control posts the Lua census can't
+         reach (Lua FFI GetControlEntity = DEFAULT / manager only). MD-only via controlentity.{controlpost.X}
+         (grounded: scriptproperties `controlentity.{$controlpost}`; live post ids manager/defence/engineer).
+         Current-sector scope (cheap, gradual as the player moves); managers + ship captains are the galaxy-wide
+         Lua census (SyncNpcCensus). Faction id via $st.owner.id (faction datatype `id`) so it MATCHES the Lua
+         census ("argon", not the display knownname). knownname-gated (named officers only). Reuses the existing
+         AIChat.index_npcs -> /v1/npcs/index path; role rides as a 3rd '~' field. -->
+    <library name="Census_officers" purpose="run_actions">
+      <actions>
+        <set_value name="$sid" exact="'game_unset'"/>
+        <do_if value="md.ai_influence_chat.Save_identity.$save_uuid?">
+          <set_value name="$sid" exact="'game_' + md.ai_influence_chat.Save_identity.$save_uuid"/>
+        </do_if>
+        <set_value name="$npcs" exact="''"/>
+        <find_station groupname="$stations" space="player.sector" multiple="true"/>
+        <do_for_each name="$st" in="$stations">
+          <do_if value="$st.owner?">
+            <set_value name="$fid" exact="$st.owner.id"/>
+            <do_if value="$st.controlentity.{controlpost.defence}? and $st.controlentity.{controlpost.defence}.knownname?">
+              <set_value name="$npcs" exact="$npcs + $st.controlentity.{controlpost.defence}.knownname + '~' + $fid + '~Defence Officer;'"/>
+            </do_if>
+            <do_if value="$st.controlentity.{controlpost.engineer}? and $st.controlentity.{controlpost.engineer}.knownname?">
+              <set_value name="$npcs" exact="$npcs + $st.controlentity.{controlpost.engineer}.knownname + '~' + $fid + '~Engineer;'"/>
+            </do_if>
+          </do_if>
+        </do_for_each>
+        <debug_text text="'AIINF officers: stations=' + $stations.count + ' npcs=[' + $npcs + ']'" filter="general"/>
+        <do_if value="$npcs != ''">
+          <raise_lua_event name="'AIChat.index_npcs'" param="'save_id=' + $sid + '|player=Player|npcs=' + $npcs"/>
+        </do_if>
+      </actions>
+    </library>
     <cue name="Sync_on_load" instantiate="true" namespace="this">
       <conditions>
         <check_any>
@@ -57,8 +89,9 @@
       </conditions>
       <actions>
         <run_actions ref="md.ai_influence_worldsync.Do_sync"/>
-        <!-- Census_npcs DORMANT pending grounded station-NPC accessor (controlentity/manager both empty for AI
-             stations). Re-enable this run_actions once Codex finds the person-enumeration primitive. -->
+        <run_actions ref="md.ai_influence_worldsync.Census_officers"/>
+        <!-- Census_npcs (old MD station-manager attempt) stays DORMANT: managers come from the Lua SyncNpcCensus
+             (GetComponentData tradenpc). Census_officers reads the NON-default posts (defence/engineer) MD-only. -->
       </actions>
     </cue>
     <cue name="Sync_periodic" namespace="this">
@@ -70,7 +103,7 @@
           <delay exact="15s" />
           <actions>
             <run_actions ref="md.ai_influence_worldsync.Do_sync"/>
-            <!-- Census_npcs DORMANT pending grounded station-NPC accessor — see note above. -->
+            <run_actions ref="md.ai_influence_worldsync.Census_officers"/>
             <reset_cue cue="Tick"/>
           </actions>
         </cue>

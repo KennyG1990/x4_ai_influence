@@ -122,16 +122,20 @@ function AI_Influence.IndexNpcs(param)
         local eq = string.find(pair, "=")
         if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
     end
+    local sid = ctx.save_id or "unindexed"
     local npcs = {}
+    -- entry = name~faction~role (faction + role optional). Key sid|chat|name + game_id=chat so a censused NPC
+    -- and a LATER chat unify on ONE card (= make_key(save,"chat",name)), same as the Lua SyncNpcCensus.
     for entry in string.gmatch(ctx.npcs or "", "([^;]+)") do
-        local sep = string.find(entry, "~")
-        if sep then
-            npcs[#npcs + 1] = { name = string.sub(entry, 1, sep - 1), faction_id = string.sub(entry, sep + 1) }
-        elseif entry ~= "" then
-            npcs[#npcs + 1] = { name = entry }
+        local parts = {}
+        for p in string.gmatch(entry, "([^~]+)") do parts[#parts + 1] = p end
+        local nm = parts[1]
+        if nm and nm ~= "" then
+            npcs[#npcs + 1] = { npc_key = sid .. "|chat|" .. nm, name = nm,
+                                faction_id = parts[2], role = parts[3] }
         end
     end
-    local body = { save_id = ctx.save_id or "unindexed", player = { name = ctx.player or "Player" }, npcs = npcs }
+    local body = { save_id = sid, game_id = "chat", player = { name = ctx.player or "Player" }, npcs = npcs }
     req:setUrl(BRIDGE_URL .. "/v1/npcs/index")
     req:setBody((json and json.encode) and json.encode(body) or body)
     log("index_npcs POST count=" .. tostring(#npcs) .. " save=" .. tostring(ctx.save_id))
@@ -199,9 +203,11 @@ function AI_Influence.BlackboardProbe(ctx)
 
         local function postRow(row)
             local req = newRequest("POST"); if not req then return end
-            row.save_id = save_id; row.runtime_component_id = tostring(rawid)
-            row.npc_name = name; row.faction = faction
-            row.role = tostring(ctx.npc_role or ctx["$npc_role"] or ctx.role or "")
+            row.save_id = save_id
+            row.runtime_component_id = row.runtime_component_id or tostring(rawid)
+            row.npc_name = row.npc_name or name
+            row.faction = row.faction or faction
+            row.role = row.role or tostring(ctx.npc_role or ctx["$npc_role"] or ctx.role or "")
             row.ship_or_station = tostring(ctx.ship or ""); row.sector = tostring(ctx.sector or "")
             row.npctemplate = tmpl; row.target_type = "conversation_person"
             req:setUrl(BRIDGE_URL .. "/v1/npc_identity_probe/blackboard")
@@ -212,6 +218,22 @@ function AI_Influence.BlackboardProbe(ctx)
                   blackboard_value = s_value, write_success = s_write, read_success = s_read })
         postRow({ phase = "read", payload_type = "object", blackboard_key = objkey,
                   blackboard_value = o_value, write_success = o_write, read_success = o_read, restored_match = o_match })
+        -- PHASE 6 (duplicate-collision): when we meet a SECOND NPC with the same NAME this session, emit a
+        -- `duplicate` row for BOTH this NPC and the prior same-name one (each with its OWN token + runtime id),
+        -- so the bridge verdict's dup_ok can confirm same-name crew get DISTINCT tokens. If the mint ever collided
+        -- (same token for two NPCs) the verdict flags dup_ok=False — this is the in-game proof of that guarantee.
+        AI_Influence._bbSeen = AI_Influence._bbSeen or {}
+        if name ~= "" then
+            local prior = AI_Influence._bbSeen[name]
+            if prior and prior.rid ~= tostring(rawid) then
+                postRow({ phase = "duplicate", payload_type = "string", blackboard_key = strkey,
+                          blackboard_value = s_value, read_success = true })
+                postRow({ phase = "duplicate", payload_type = "string", blackboard_key = strkey,
+                          blackboard_value = prior.tok, read_success = true,
+                          npc_name = name, runtime_component_id = prior.rid })
+            end
+            if not prior then AI_Influence._bbSeen[name] = { tok = s_value, rid = tostring(rawid) } end
+        end
         -- Carry the token into the chat context → it rides prompt_vars to the bridge (contracts merges prompt_vars
         -- into request.metadata), so npc_complete keys this conversation's MEMORY by the token (per-ID memory).
         if s_value and s_value ~= "" then ctx.blackboard_key = tostring(s_value) end
@@ -352,10 +374,12 @@ function AI_Influence.SyncRelations(param)
     req:send(function(resp, err) if err then log("relations_sync err: " .. tostring(err)) end end)
     AI_Influence.SyncSectors(sid)
     AI_Influence._econTick = (AI_Influence._econTick or 0) + 1
-    if AI_Influence._econTick == 1 or (AI_Influence._econTick % 8 == 0) then AI_Influence.SyncEconomy(sid); AI_Influence.SyncFleets(sid); AI_Influence.SyncLogbook(sid); AI_Influence.SyncFactions(sid) end
+    if AI_Influence._econTick == 1 or (AI_Influence._econTick % 8 == 0) then AI_Influence.SyncEconomy(sid); AI_Influence.SyncFleets(sid); AI_Influence.SyncLogbook(sid); AI_Influence.SyncFactions(sid); AI_Influence.SyncNpcCensus(sid) end
     if AI_Influence._econTick % 4 == 0 then AI_Influence.SyncInfluence(sid) end
     -- SPEC 1j: drain prominent faction->player comms ~every other tick (cheap GET; comms are rare + cooldown'd).
     if AI_Influence._econTick % 2 == 0 then AI_Influence.DrainPlayerComms(sid) end
+    -- Deceased sweep ~every 16th tick (~4 min); cheap + threshold-protected (won't false-mark mid-cycle).
+    if AI_Influence._econTick % 16 == 0 then AI_Influence.SweepDeceased(sid) end
 end
 
 local function onSyncRelations(_, param) AI_Influence.SyncRelations(param) end
@@ -712,6 +736,126 @@ function AI_Influence.SyncEconomy(saveId)
         end
         if last >= total then advanceFaction() else AI_Influence._econOff = last end
     end)
+end
+
+-- ---- NPC census: per-faction station MANAGER + SHIPTRADER persons, round-robin (the live roster) -----------
+-- #98 / I6 (T2): populate the roster with talk-able OPERATIONAL NPCs WITHOUT a chat, gradually. A station's
+-- commanding person is GetComponentData(st,"tradenpc") (the manager) + "shiptrader" — GROUNDED on the vanilla UI
+-- (ego_detailmonitor/menu_map.lua:14440, menu_docked.lua:3787). The prior MD `manager`/`controlentity` guesses
+-- were empty because those are NOT the property (Lua-FFI `tradenpc` is). Round-robin ONE faction + a bounded slice
+-- per call (same throttle as SyncEconomy) so the UI-thread C-API never stutters. Entries are keyed sid|chat|name
+-- (= make_key(save,"chat",name)) so a censused manager and a LATER chat unify on ONE card (no duplicate). Generic
+-- ship crew (T3) stay LAZY — indexed on interaction — per the spec (don't dump thousands of crew).
+local NPC_STATION_CAP = 12   -- per faction PER TICK (small: ALL 12 factions advance each tick, so every NPC's
+local NPC_SHIP_CAP = 12      -- last_active refreshes once per full cycle — required for the deceased sweep).
+-- Sector NAME from any object: GetComponentData(obj,"sector") returns a cdata component; passing it straight
+-- back throws "Invalid argument got cdata", so normalise via ConvertStringToLuaID first (same fix as SyncFleets).
+local function aic_sectorName(comp)
+    local sec = ""
+    pcall(function()
+        local sc = GetComponentData(comp, "sector")
+        if sc then sec = tostring(GetComponentData(ConvertStringToLuaID(tostring(sc)), "name") or "") end
+    end)
+    return sec
+end
+-- ALL FACTIONS each tick (small per-faction caps + per-faction cursors `_npcStOff`/`_npcShOff`). Every NPC's
+-- last_active thus refreshes once per full cycle, so the bridge deceased-sweep can treat "not re-seen for > a
+-- cycle" as gone (its ship/station was destroyed). Ground truth galaxy-wide — GetContained* is NOT fog-of-war
+-- gated (proven by SyncFleets reporting fleets for factions the player is nowhere near).
+function AI_Influence.SyncNpcCensus(saveId)
+    local sid = (saveId and saveId ~= "") and saveId or "unindexed"
+    AI_Influence._npcStOff = AI_Influence._npcStOff or {}
+    AI_Influence._npcShOff = AI_Influence._npcShOff or {}
+    local npcs = {}
+    local function addPerson(pid, fid, secname, defrole)
+        if pid == nil then return end
+        local p = pid
+        pcall(function() if ConvertIDTo64Bit then p = ConvertIDTo64Bit(pid) end end)
+        local nm, post
+        pcall(function() nm, post = GetComponentData(p, "name", "postname") end)
+        nm = nm and tostring(nm) or ""
+        if nm ~= "" then
+            npcs[#npcs + 1] = {
+                npc_key = sid .. "|chat|" .. nm,          -- = make_key(save,"chat",name): unify w/ chat card
+                name = nm, faction_id = fid,
+                role = (post and tostring(post) ~= "") and tostring(post) or defrole,
+                sector = secname or "",
+            }
+        end
+    end
+    for _, fid in ipairs(ECON_FACTIONS) do
+        -- stations: manager (tradenpc) + shiptrader
+        pcall(function()
+            local stations = GetContainedStationsByOwner(fid, nil, true)
+            local total = (type(stations) == "table") and #stations or 0
+            if total == 0 then AI_Influence._npcStOff[fid] = 0; return end
+            local off = AI_Influence._npcStOff[fid] or 0
+            if off >= total then off = 0 end
+            local last = math.min(off + NPC_STATION_CAP, total)
+            for i = off + 1, last do
+                local st = stations[i]
+                local secname = aic_sectorName(st)
+                local tradenpc, shiptrader
+                pcall(function() tradenpc, shiptrader = GetComponentData(st, "tradenpc", "shiptrader") end)
+                addPerson(tradenpc, fid, secname, "manager")
+                addPerson(shiptrader, fid, secname, "shiptrader")
+            end
+            AI_Influence._npcStOff[fid] = (last >= total) and 0 or last
+        end)
+        -- ships: captains of SIGNIFICANT ships only (capitals ship_l/xl + trade/mine/build; fighters stay lazy T3)
+        pcall(function()
+            local objs = GetContainedObjectsByOwner(fid)        -- single-arg = galaxy-wide (per SyncFleets canon)
+            if type(objs) ~= "table" then AI_Influence._npcShOff[fid] = 0; return end
+            local ships = {}
+            for _, obj in ipairs(objs) do
+                pcall(function()
+                    local macro = GetComponentData(obj, "macro")
+                    if macro and macro ~= "" then
+                        local mc = tostring(ffi.string(C.GetMacroClass(macro)) or "")
+                        if mc:sub(1, 5) == "ship_" then
+                            local sz = mc:sub(6)
+                            local pp = tostring(GetComponentData(obj, "primarypurpose") or "")
+                            if sz == "l" or sz == "xl" or pp == "trade" or pp == "mine" or pp == "build" then
+                                ships[#ships + 1] = obj
+                            end
+                        end
+                    end
+                end)
+            end
+            local total = #ships
+            if total == 0 then AI_Influence._npcShOff[fid] = 0; return end
+            local off = AI_Influence._npcShOff[fid] or 0
+            if off >= total then off = 0 end
+            local last = math.min(off + NPC_SHIP_CAP, total)
+            for i = off + 1, last do
+                local sh = ships[i]
+                local cap
+                pcall(function() cap = GetComponentData(sh, "pilot") end)
+                addPerson(cap, fid, aic_sectorName(sh), "captain")
+            end
+            AI_Influence._npcShOff[fid] = (last >= total) and 0 or last
+        end)
+    end
+    if #npcs > 0 then
+        local req = newRequest("POST")
+        if req then
+            local body = { save_id = sid, game_id = "chat", player = { name = "Player" }, npcs = npcs }
+            req:setUrl(BRIDGE_URL .. "/v1/npcs/index")
+            req:setBody((json and json.encode) and json.encode(body) or body)
+            req:send(function(_, err) if err then log("npccensus err: " .. tostring(err)) end end)
+        end
+        log("npccensus all-factions npcs=" .. tostring(#npcs))
+    end
+end
+
+-- ---- deceased sweep: mark/prune NPCs the census stopped seeing (their ship/station died) ----------
+-- Cheap GET; the bridge does one bounded query (stale_seconds threshold > a full census cycle, so a faction
+-- not yet re-reached this cycle is NOT falsely marked). Known NPCs -> deceased (memory kept); generic -> pruned.
+function AI_Influence.SweepDeceased(saveId)
+    local req = newRequest("GET")
+    if not req then return end
+    req:setUrl(BRIDGE_URL .. "/api/memory/sweep_deceased?save_id=" .. tostring(saveId or "unindexed"))
+    req:send(function(_, err) if err then log("sweep err: " .. tostring(err)) end end)
 end
 
 -- ---- per-NPC skills: read the live crew skills the way the vanilla crew menu does ---------------
