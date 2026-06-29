@@ -17,6 +17,20 @@
         <create_group groupname="$Watched"/>
       </actions>
       <cues>
+        <!-- FEED BROADENING (P1b): besides ships WE order, periodically add the PLAYER's whole fleet to $Watched,
+             so combat the player's forces are involved in (galaxy-wide, real attacker/victim/sector) also POSTs
+             hostile_events → OPORD threats. Bounded (player-owned ships only); a full all-faction capital watch is
+             heavier and left as a tuning option. Grounded on DeadAir's find_ship_by_true_owner + add_to_group. -->
+        <cue name="Watch_player_fleet" namespace="this">
+          <delay exact="30s"/>
+          <actions>
+            <find_ship_by_true_owner groupname="$mine" faction="faction.player" space="player.galaxy" checkoperational="true" multiple="true" recursive="true"/>
+            <do_for_each name="$sh" in="$mine">
+              <add_to_group groupname="$Watched" object="$sh"/>
+            </do_for_each>
+            <reset_cue cue="Watch_player_fleet"/>
+          </actions>
+        </cue>
         <!-- A watched (ordered) ship KILLED something: object = our ship (attacker), param = the victim.
              group="$Watched" (bare) — nested cues inherit State's namespace (DeadAir pattern). -->
         <cue name="On_killed" instantiate="true">

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<aiscript name="order.aic.opord.protectposition" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="aiscripts.xsd">
+  <!-- OPORD execution order: a leased faction ship holds/defends an OPORD anchor. Adapted from DeadAir's
+       order.da.infestation.protectposition (the proven protect pattern) but: Kha'ak-only requirement REMOVED,
+       infestation goalkeys REMOVED, destroy_object fallback REMOVED (a leased faction asset is NOT ours to
+       destroy), DA signals REPLACED with a bridge report (raise_lua_event AIChat.opord_order_event → Lua POSTs
+       /v1/opord/order_event). Runs at attention min="unknown" so it works out of sector. -->
+  <order id="AICOpordProtect" name="{1041, 10027}" category="internal" allowinloop="false">
+    <params>
+      <param name="destination" type="position" text="{1041, 10027}" comment="OPORD anchor: sector + position">
+        <input_param name="class" value="class.sector"/>
+      </param>
+      <param name="opordradius" type="number" default="30000" comment="hold radius around the anchor (m)"/>
+      <param name="stance" type="text" default="'defensive'" comment="defensive = engage on contact; aggressive = engage on sight"/>
+      <param name="leasetag" type="text" default="''" comment="bridge lease id, echoed in execution reports"/>
+      <param name="returnoncomplete" type="bool" default="false" comment="(reserved) return to prior posting when released"/>
+    </params>
+    <requires>
+      <match shiptype="shiptype.lasertower" negate="true"/>
+      <match class="class.spacesuit" negate="true"/>
+    </requires>
+    <location object="$destination.{1}" position="$destination.{2}" radius="this.ship.maxradarrange"/>
+  </order>
+  <init>
+    <set_command command="command.patrol"/>
+    <do_if value="$destination.{1}.isclass.sector">
+      <set_value name="$targetsector" exact="$destination.{1}"/>
+    </do_if>
+    <do_else>
+      <set_value name="$abort"/>
+    </do_else>
+    <do_if value="not $position?">
+      <set_value name="$position" exact="$destination.{2}"/>
+    </do_if>
+  </init>
+  <attention min="unknown">
+    <actions>
+      <do_if value="$abort?">
+        <raise_lua_event name="'AIChat.opord_order_event'" param="'event=failed|reason=bad_destination|lease=' + $leasetag"/>
+        <resume label="finish"/>
+      </do_if>
+      <label name="start"/>
+      <!-- Move to the anchor sector/position if not already there. -->
+      <do_if value="(this.sector != $targetsector) or (this.ship.distanceto.[$targetsector, $position] gt this.ship.maxradarrange)">
+        <run_script name="'move.generic'" result="$movesuccess">
+          <param name="destination" value="$targetsector"/>
+          <param name="position" value="$position"/>
+          <param name="recallsubordinates" value="false"/>
+        </run_script>
+        <do_if value="not $movesuccess">
+          <raise_lua_event name="'AIChat.opord_order_event'" param="'event=failed|reason=unreachable|lease=' + $leasetag"/>
+          <resume label="finish"/>
+        </do_if>
+      </do_if>
+      <get_zone_at_position name="$targetzone" sector="$targetsector" value="$position"/>
+      <do_if value="not $targetzone">
+        <move_to object="this.ship" destination="$targetsector" uselocalhighways="false" finishonapproach="true">
+          <position value="$position"/>
+        </move_to>
+        <get_zone_at_position name="$targetzone" sector="$targetsector" value="$position"/>
+      </do_if>
+      <do_if value="$targetzone">
+        <create_position name="$zoneposition" space="$targetzone" value="$position" object="$targetsector"/>
+      </do_if>
+      <set_order_syncpoint_reached order="this.ship.order"/>
+      <!-- ARRIVED: report observed execution to the bridge. -->
+      <raise_lua_event name="'AIChat.opord_order_event'" param="'event=arrived|lease=' + $leasetag"/>
+      <!-- Hold the anchor: seek + engage enemies inside the OPORD radius. -->
+      <do_while value="$targetzone.exists">
+        <get_safe_pos result="$pos" zone="$targetzone" radius="this.ship.size/2f" max="this.ship.maxradarrange" value="$zoneposition"/>
+        <run_script name="'move.seekenemies'">
+          <param name="destination" value="$targetzone"/>
+          <param name="pos" value="$pos"/>
+          <param name="pursuetargets" value="false"/>
+          <param name="pursuedistance" value="$opordradius"/>
+          <param name="targetclasses" value="[class.ship, class.station]"/>
+          <param name="radius" value="this.ship.maxradarrange"/>
+          <param name="radiusanchorpos" value="$position"/>
+          <param name="radiusanchorspace" value="$targetsector"/>
+          <param name="engageonsight" value="$stance == 'aggressive'"/>
+          <param name="enforceradius" value="true"/>
+          <param name="internalorder" value="true"/>
+        </run_script>
+        <wait exact="500ms"/>
+      </do_while>
+      <label name="finish"/>
+    </actions>
+  </attention>
+  <on_abort>
+    <!-- Vanilla AI or the watchdog took the ship back — report interrupted; do NOT destroy a faction asset. -->
+    <raise_lua_event name="'AIChat.opord_order_event'" param="'event=interrupted|lease=' + $leasetag"/>
+  </on_abort>
+</aiscript>

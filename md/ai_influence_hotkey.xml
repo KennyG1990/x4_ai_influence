@@ -11,12 +11,24 @@
       <actions>
         <signal_cue_instantly cue="md.Hotkey_API.Register_Action" param="table[             $id          = 'ai_influence_open_chat',             $name        = 'AI Influence: Open Chat',             $description = 'Open the AI Influence comm-link chat window.',             $category    = 'AI Influence',             $onPress     = On_Hotkey,             $contexts    = ['flying', 'walking']           ]"/>
         <signal_cue_instantly cue="md.Hotkey_API.Register_Key" param="table[$key = 'shift c', $id = 'ai_influence_open_chat']"/>
+        <!-- DEBUG: force one OPORD threat (Teladi pressure on Argon in the player's current sector) so the whole
+             OPORD pipeline can be proven live in-game without waiting for natural combat. -->
+        <signal_cue_instantly cue="md.Hotkey_API.Register_Action" param="table[             $id          = 'ai_influence_debug_threat',             $name        = 'AI Influence: Force OPORD Threat (debug)',             $description = 'Inject one hostile event so an OPORD operation forms — for testing the command pipeline.',             $category    = 'AI Influence',             $onPress     = On_DebugThreat,             $contexts    = ['flying', 'walking']           ]"/>
+        <signal_cue_instantly cue="md.Hotkey_API.Register_Key" param="table[$key = 'shift v', $id = 'ai_influence_debug_threat']"/>
       </actions>
     </cue>
     <cue name="On_Hotkey" instantiate="true" namespace="this">
       <conditions>
         <event_cue_signalled cue="md.Setup.Start" />
       </conditions>
+    </cue>
+    <cue name="On_DebugThreat" instantiate="true" namespace="this">
+      <actions>
+        <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
+        <set_value name="$sec" exact="if player.sector.knownname? then player.sector.knownname else 'Debug Sector'"/>
+        <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=teladi|victim=argon|sector=' + $sec + '|kind=ship_destroyed|magnitude=5|order=|save_id=' + $sid"/>
+        <show_notification text="'[AI TEST] Forced OPORD threat: Teladi pressure on Argon in ' + $sec"/>
+      </actions>
     </cue>
   </cues>
 </mdscript>

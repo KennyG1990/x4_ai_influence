@@ -355,6 +355,85 @@ end
 
 local function onReportHostile(_, param) AI_Influence.ReportHostile(param) end
 
+-- OPORD execution report: the protectposition aiscript raises AIChat.opord_order_event with
+-- "event=arrived|lease=<id>" (or failed/interrupted) → POST observed execution to the bridge so the lease/task
+-- state is grounded in what the ship actually did. save_id rides AI_Influence._saveId (set on the relations tick).
+function AI_Influence.OpordOrderEvent(param)
+    local req = newRequest("POST"); if not req then return end
+    local ctx = {}
+    for pair in string.gmatch(tostring(param or ""), "([^|]+)") do
+        local eq = string.find(pair, "="); if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
+    end
+    if not ctx.lease or ctx.lease == "" then return end
+    local body = { save_id = AI_Influence._saveId or "unindexed", lease_id = ctx.lease,
+                   event = ctx.event or "interrupted", evidence = { reason = ctx.reason or "" } }
+    req:setUrl(BRIDGE_URL .. "/v1/opord/order_event")
+    req:setBody((json and json.encode) and json.encode(body) or body)
+    req:send(function(_, err) if err then log("opord order_event err: " .. tostring(err)) end end)
+end
+local function onOpordOrderEvent(_, param) AI_Influence.OpordOrderEvent(param) end
+
+-- OPORD issuer (Phase D): poll the bridge for tasks awaiting a real ship order, relay each to the MD issuer
+-- (aic_opord_execution.xml On_Assign) which finds a faction ship + create_orders our protectposition aiscript.
+function AI_Influence.PollOpordOrders(saveId)
+    local req = newRequest("POST"); if not req then return end
+    req:setUrl(BRIDGE_URL .. "/v1/opord/orders/pending")
+    req:setBody((json and json.encode) and json.encode({ save_id = saveId or "unindexed" }) or { save_id = saveId })
+    req:send(function(resp, err)
+        if err then return end
+        local content, jerr
+        if resp and resp.getJson then content, jerr = resp:getJson() end
+        if jerr or not content or not content.pending or not AddUITriggeredEvent then return end
+        for _, t in ipairs(content.pending) do
+            if type(t) == "table" and t.task_id then
+                AddUITriggeredEvent("ai_influence", "opord_assign", { operation_id = t.operation_id,
+                    task_id = t.task_id, faction = t.faction, sector = t.sector, priority = t.priority,
+                    stance = "defensive" })
+            end
+        end
+    end)
+end
+
+-- MD issued a real create_order → record the lease on the bridge, then mark the order issued (chained POSTs).
+function AI_Influence.OpordIssued(param)
+    local ctx = {}
+    for pair in string.gmatch(tostring(param or ""), "([^|]+)") do
+        local eq = string.find(pair, "="); if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
+    end
+    local sid = AI_Influence._saveId or "unindexed"
+    local lreq = newRequest("POST"); if not lreq then return end
+    lreq:setUrl(BRIDGE_URL .. "/v1/opord/lease")
+    lreq:setBody((json and json.encode) and json.encode({ save_id = sid, operation_id = ctx.op, task_id = ctx.task,
+        faction = ctx.faction, ship_runtime_id = ctx.ship, ship_name = ctx.name, sector = ctx.sector,
+        order_kind = "protectposition", priority = 1 }) or {})
+    lreq:send(function(resp, err)
+        if err then return end
+        local content; if resp and resp.getJson then content = resp:getJson() end
+        if not content or not content.lease_id then return end
+        local iss = newRequest("POST"); if not iss then return end
+        iss:setUrl(BRIDGE_URL .. "/v1/opord/orders/issued")
+        iss:setBody((json and json.encode) and json.encode({ save_id = sid, lease_id = content.lease_id,
+            assigned_order_id = "protectposition" }) or {})
+        iss:send(function(_, e2) if e2 then log("opord issued err: " .. tostring(e2)) end end)
+    end)
+end
+local function onOpordIssued(_, param) AI_Influence.OpordIssued(param) end
+
+-- No ship available → record a durable force-quota request on the bridge (the spec's path 2).
+function AI_Influence.OpordForceRequest(param)
+    local ctx = {}
+    for pair in string.gmatch(tostring(param or ""), "([^|]+)") do
+        local eq = string.find(pair, "="); if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
+    end
+    local req = newRequest("POST"); if not req then return end
+    req:setUrl(BRIDGE_URL .. "/v1/opord/force_request")
+    req:setBody((json and json.encode) and json.encode({ save_id = AI_Influence._saveId or "unindexed",
+        operation_id = ctx.op, task_id = ctx.task, faction = ctx.faction, sector = ctx.sector or "",
+        ship_role = ctx.role or "patrol", priority = 1 }) or {})
+    req:send(function(_, err) if err then log("opord force_request err: " .. tostring(err)) end end)
+end
+local function onOpordForceRequest(_, param) AI_Influence.OpordForceRequest(param) end
+
 -- ---- sync-on-load: push the game's ACTUAL faction relations so the DB mirrors reality -----------
 -- MD raises "AIChat.sync_relations" with "save_id=<sid>||idA~idB~rel;idA~idB~rel;..." on game load.
 function AI_Influence.SyncRelations(param)
@@ -362,6 +441,7 @@ function AI_Influence.SyncRelations(param)
     if not req then return end
     local sid, body = string.match(tostring(param or ""), "save_id=([^|]*)||(.*)")
     sid = (sid ~= nil and sid ~= "") and sid or "unindexed"
+    AI_Influence._saveId = sid   -- cache for callers w/o a save_id (e.g. OPORD order-event reports)
     local rels = {}
     for entry in string.gmatch(body or "", "([^;]+)") do
         local a, b, r = string.match(entry, "([^~]+)~([^~]+)~(.+)")
@@ -382,6 +462,8 @@ function AI_Influence.SyncRelations(param)
     if AI_Influence._econTick % 16 == 0 then AI_Influence.SweepDeceased(sid) end
     -- OPORD pipeline ~every 8th tick (~2 min): recognize threats → analyse missions → (future phases).
     if AI_Influence._econTick % 8 == 0 then AI_Influence.AdvanceOperations(sid) end
+    -- OPORD execution issuer ~every 8th tick: poll tasks awaiting a real ship order → MD finds ship + create_order.
+    if AI_Influence._econTick % 8 == 0 then AI_Influence.PollOpordOrders(sid) end
 end
 
 local function onSyncRelations(_, param) AI_Influence.SyncRelations(param) end
@@ -1119,6 +1201,9 @@ local function init()
     RegisterEvent("AIChat.hostile_event", onReportHostile)
     RegisterEvent("AIChat.sync_relations", onSyncRelations)
     RegisterEvent("AIChat.npc_skills", onNpcSkills)
+    RegisterEvent("AIChat.opord_order_event", onOpordOrderEvent)
+    RegisterEvent("AIChat.opord_issued", onOpordIssued)
+    RegisterEvent("AIChat.opord_force_request", onOpordForceRequest)
     log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.suggest, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")
 end
 init()

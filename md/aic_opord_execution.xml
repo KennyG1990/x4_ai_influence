@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="aic_opord_execution" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- OPORD execution issuer (Phase D). The Lua poller (AI_Influence.PollOpordOrders) GETs pending OPORD tasks
+       from the bridge and fires AIChat-style ui events here. We find a real faction combat ship and give it our
+       custom order.aic.opord.protectposition order (create_order). The lease is recorded on the bridge by the Lua
+       AIChat.opord_issued handler (optimistic; the bridge's unique-lease index still prevents a SECOND op leasing
+       the same ship). leasetag = the bridge task_id, which the aiscript echoes in its order-event reports so the
+       bridge can resolve the lease. v1 holds the ship's OWN sector (proves the order pipeline in-game); precise
+       target-sector resolution across the string<->object boundary is a documented refinement. -->
+  <cues>
+    <cue name="On_Assign" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'opord_assign'"/>
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3"/>
+        <set_value name="$fid" exact="if $d.$faction? then $d.$faction else ''"/>
+        <set_value name="$task" exact="if $d.$task_id? then $d.$task_id else ''"/>
+        <set_value name="$op" exact="if $d.$operation_id? then $d.$operation_id else ''"/>
+        <set_value name="$stance" exact="if $d.$stance? then $d.$stance else 'defensive'"/>
+        <do_if value="$fid != '' and faction.{$fid}?">
+          <find_ship_by_true_owner groupname="$cands" faction="faction.{$fid}" space="player.galaxy" class="class.ship" checkoperational="true" multiple="true" recursive="true"/>
+          <set_value name="$ship" exact="null"/>
+          <do_for_each name="$s" in="$cands">
+            <do_if value="not $ship? and $s.exists and $s.sector?">
+              <set_value name="$ship" exact="$s"/>
+            </do_if>
+          </do_for_each>
+          <do_if value="$ship?">
+            <create_position name="$anchor" space="$ship.sector"/>
+            <create_order object="$ship" id="'AICOpordProtect'">
+              <param name="destination" value="$anchor"/>
+              <param name="opordradius" value="30000"/>
+              <param name="stance" value="$stance"/>
+              <param name="leasetag" value="$task"/>
+            </create_order>
+            <raise_lua_event name="'AIChat.opord_issued'" param="'op=' + $op + '|task=' + $task + '|faction=' + $fid + '|ship=' + $ship.idcode + '|name=' + $ship.knownname + '|sector=' + $ship.sector.knownname"/>
+          </do_if>
+          <do_else>
+            <raise_lua_event name="'AIChat.opord_force_request'" param="'op=' + $op + '|task=' + $task + '|faction=' + $fid + '|role=patrol'"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>
