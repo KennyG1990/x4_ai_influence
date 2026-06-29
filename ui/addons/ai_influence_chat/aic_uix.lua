@@ -380,6 +380,8 @@ function AI_Influence.SyncRelations(param)
     if AI_Influence._econTick % 2 == 0 then AI_Influence.DrainPlayerComms(sid) end
     -- Deceased sweep ~every 16th tick (~4 min); cheap + threshold-protected (won't false-mark mid-cycle).
     if AI_Influence._econTick % 16 == 0 then AI_Influence.SweepDeceased(sid) end
+    -- OPORD pipeline ~every 8th tick (~2 min): recognize threats → analyse missions → (future phases).
+    if AI_Influence._econTick % 8 == 0 then AI_Influence.AdvanceOperations(sid) end
 end
 
 local function onSyncRelations(_, param) AI_Influence.SyncRelations(param) end
@@ -856,6 +858,17 @@ function AI_Influence.SweepDeceased(saveId)
     if not req then return end
     req:setUrl(BRIDGE_URL .. "/api/memory/sweep_deceased?save_id=" .. tostring(saveId or "unindexed"))
     req:send(function(_, err) if err then log("sweep err: " .. tostring(err)) end end)
+end
+
+-- ---- OPORD pipeline: drive operations forward one heartbeat at a time -------------------------------
+-- Cheap GET to the bridge pipeline driver (advance = recognize threats → mission analysis → …future phases).
+-- The bridge aggregates real hostile_events into ONE deduped operation per threat and advances its lifecycle.
+-- No player surface yet (narrator is a later OPORD phase), so this can run silently while we build the chain.
+function AI_Influence.AdvanceOperations(saveId)
+    local req = newRequest("GET")
+    if not req then return end
+    req:setUrl(BRIDGE_URL .. "/api/ops/advance?save_id=" .. tostring(saveId or "unindexed"))
+    req:send(function(_, err) if err then log("opord advance err: " .. tostring(err)) end end)
 end
 
 -- ---- per-NPC skills: read the live crew skills the way the vanilla crew menu does ---------------
