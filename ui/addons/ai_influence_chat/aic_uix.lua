@@ -376,19 +376,25 @@ local function onOpordOrderEvent(_, param) AI_Influence.OpordOrderEvent(param) e
 -- OPORD issuer (Phase D): poll the bridge for tasks awaiting a real ship order, relay each to the MD issuer
 -- (aic_opord_execution.xml On_Assign) which finds a faction ship + create_orders our protectposition aiscript.
 function AI_Influence.PollOpordOrders(saveId)
-    local req = newRequest("POST"); if not req then return end
+    -- #70 diag: every early-return here was SILENT; log each so a dead poll is visible in debuglog.
+    local req = newRequest("POST"); if not req then log("opord poll: djfhe request unavailable") return end
     req:setUrl(BRIDGE_URL .. "/v1/opord/orders/pending")
     req:setBody((json and json.encode) and json.encode({ save_id = saveId or "unindexed" }) or { save_id = saveId })
+    log("opord poll: POST sent save=" .. tostring(saveId))
     req:send(function(resp, err)
-        if err then return end
+        if err then log("opord poll err: " .. tostring(err)) return end
         local content, jerr
         if resp and resp.getJson then content, jerr = resp:getJson() end
-        if jerr or not content or not content.pending or not AddUITriggeredEvent then return end
+        if jerr or not content or not content.pending or not AddUITriggeredEvent then
+            log("opord poll: unusable response jerr=" .. tostring(jerr) .. " hasPending=" .. tostring(content and content.pending ~= nil))
+            return
+        end
+        log("opord poll: pending=" .. tostring(#content.pending))
         for _, t in ipairs(content.pending) do
             if type(t) == "table" and t.task_id then
                 AddUITriggeredEvent("ai_influence", "opord_assign", { operation_id = t.operation_id,
                     task_id = t.task_id, faction = t.faction, sector = t.sector, priority = t.priority,
-                    stance = "defensive" })
+                    stance = t.stance or "defensive" })
             end
         end
     end)
@@ -460,10 +466,11 @@ function AI_Influence.SyncRelations(param)
     if AI_Influence._econTick % 2 == 0 then AI_Influence.DrainPlayerComms(sid) end
     -- Deceased sweep ~every 16th tick (~4 min); cheap + threshold-protected (won't false-mark mid-cycle).
     if AI_Influence._econTick % 16 == 0 then AI_Influence.SweepDeceased(sid) end
-    -- OPORD pipeline ~every 8th tick (~2 min): recognize threats → analyse missions → (future phases).
-    if AI_Influence._econTick % 8 == 0 then AI_Influence.AdvanceOperations(sid) end
-    -- OPORD execution issuer ~every 8th tick: poll tasks awaiting a real ship order → MD finds ship + create_order.
-    if AI_Influence._econTick % 8 == 0 then AI_Influence.PollOpordOrders(sid) end
+    -- OPORD pipeline ~every 8th tick (~2 min). #70: STAGGERED off the %8==0 burst (5 sync calls fire there) so
+    -- the OPORD requests aren't the tail of a 7-request burst; offsets keep the same cadence.
+    if AI_Influence._econTick % 8 == 3 then AI_Influence.AdvanceOperations(sid) end
+    -- OPORD execution issuer: poll tasks awaiting a real ship order → MD finds ship + create_order.
+    if AI_Influence._econTick % 8 == 5 then AI_Influence.PollOpordOrders(sid) end
 end
 
 local function onSyncRelations(_, param) AI_Influence.SyncRelations(param) end
