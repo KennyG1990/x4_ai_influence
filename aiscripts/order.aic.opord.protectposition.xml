@@ -10,10 +10,10 @@
       <param name="destination" type="position" text="{1041, 10027}" comment="OPORD anchor: sector + position">
         <input_param name="class" value="class.sector"/>
       </param>
-      <param name="opordradius" type="number" default="30000" comment="hold radius around the anchor (m)"/>
-      <param name="stance" type="text" default="'defensive'" comment="defensive = engage on contact; aggressive = engage on sight"/>
-      <param name="leasetag" type="text" default="''" comment="bridge lease id, echoed in execution reports"/>
-      <param name="returnoncomplete" type="bool" default="false" comment="(reserved) return to prior posting when released"/>
+      <param name="opordradius" type="number" default="30000" text="{1041, 10126}" comment="hold radius around the anchor (m)"/>
+      <param name="aggressive" type="bool" default="0" text="{1041, 10086}" comment="0 = defensive (engage on contact); 1 = aggressive (engage on sight)"/>
+      <param name="leasetag" type="number" default="0" text="{1041, 10126}" comment="bridge lease id (the numeric task id), echoed in execution reports"/>
+      <param name="returnoncomplete" type="bool" default="0" text="{1041, 10086}" comment="(reserved) return to prior posting when released"/>
     </params>
     <requires>
       <match shiptype="shiptype.lasertower" negate="true"/>
@@ -77,7 +77,7 @@
           <param name="radius" value="this.ship.maxradarrange"/>
           <param name="radiusanchorpos" value="$position"/>
           <param name="radiusanchorspace" value="$targetsector"/>
-          <param name="engageonsight" value="$stance == 'aggressive'"/>
+          <param name="engageonsight" value="$aggressive"/>
           <param name="enforceradius" value="true"/>
           <param name="internalorder" value="true"/>
         </run_script>

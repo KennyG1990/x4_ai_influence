@@ -23,6 +23,9 @@
       </conditions>
     </cue>
     <cue name="On_DebugThreat" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
       <actions>
         <set_value name="$sid" exact="if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset'"/>
         <set_value name="$sec" exact="if player.sector.knownname? then player.sector.knownname else 'Debug Sector'"/>

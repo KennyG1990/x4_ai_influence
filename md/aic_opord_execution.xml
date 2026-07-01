@@ -15,7 +15,7 @@
       <actions>
         <set_value name="$d" exact="event.param3"/>
         <set_value name="$fid" exact="if $d.$faction? then $d.$faction else ''"/>
-        <set_value name="$task" exact="if $d.$task_id? then $d.$task_id else ''"/>
+        <set_value name="$task" exact="if $d.$task_id? then $d.$task_id else 0"/>
         <set_value name="$op" exact="if $d.$operation_id? then $d.$operation_id else ''"/>
         <set_value name="$stance" exact="if $d.$stance? then $d.$stance else 'defensive'"/>
         <do_if value="$fid != '' and faction.{$fid}?">
@@ -29,9 +29,9 @@
           <do_if value="$ship? and $ship != null">
             <create_position name="$anchor" space="$ship.sector"/>
             <create_order object="$ship" id="'AICOpordProtect'">
-              <param name="destination" value="$anchor"/>
+              <param name="destination" value="[$ship.sector, $anchor]"/><!-- position params take [space, position] (DeadAir deadairdynamicuniverse.xml:12175) — a bare position fails $destination.{1}/{2} lookups -->
               <param name="opordradius" value="30000"/>
-              <param name="stance" value="$stance"/>
+              <param name="aggressive" value="$stance == 'aggressive'"/>
               <param name="leasetag" value="$task"/>
             </create_order>
             <raise_lua_event name="'AIChat.opord_issued'" param="'op=' + $op + '|task=' + $task + '|faction=' + $fid + '|ship=' + $ship.idcode + '|name=' + $ship.knownname + '|sector=' + $ship.sector.knownname"/>

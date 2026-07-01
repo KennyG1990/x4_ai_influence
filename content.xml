@@ -9,5 +9,5 @@
   <dependency id="djfhe_http" />
   <!-- SirNukes Mod Support APIs provides the Hotkey + Lua-loader APIs the conversation/hotkey
        cues use; optional so the mod still loads (those features just won't bind) if it's absent. -->
-  <dependency id="sn_mod_support_apis" optional="true" />
+  <dependency id="ws_2042901274" optional="true" /><!-- SirNukes Mod Support APIs (folder sn_mod_support_apis; the content id is the workshop id). NOTE: its Hotkey API only fires if the external X4 Python Pipe Server is running on the host. -->
 </content>
