@@ -19,14 +19,14 @@
         <set_value name="$op" exact="if $d.$operation_id? then $d.$operation_id else ''"/>
         <set_value name="$stance" exact="if $d.$stance? then $d.$stance else 'defensive'"/>
         <do_if value="$fid != '' and faction.{$fid}?">
-          <find_ship_by_true_owner groupname="$cands" faction="faction.{$fid}" space="player.galaxy" class="class.ship" checkoperational="true" multiple="true" recursive="true"/>
-          <set_value name="$ship" exact="null"/>
+          <find_ship_by_true_owner groupname="$cands" faction="faction.{$fid}" space="player.galaxy" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
           <do_for_each name="$s" in="$cands">
-            <do_if value="not $ship? and $s.exists and $s.sector?">
+            <do_if value="(not $ship? or $ship == null) and $s.exists and $s.sector? and $s.primarypurpose == purpose.fight">
               <set_value name="$ship" exact="$s"/>
             </do_if>
           </do_for_each>
-          <do_if value="$ship?">
+          <debug_text text="'AIC OPORD issue fid=' + $fid + ' cands=' + $cands.count + ' ship=' + (if $ship? and $ship != null then $ship.idcode else 'NONE')" filter="general"/>
+          <do_if value="$ship? and $ship != null">
             <create_position name="$anchor" space="$ship.sector"/>
             <create_order object="$ship" id="'AICOpordProtect'">
               <param name="destination" value="$anchor"/>

@@ -3,10 +3,10 @@
     "dialogue_only",
     "memory_write",
     "logbook_entry",
-    "status_update"
+    "status_update",
+    "relation_delta_limited"
   ],
   "disabled_until_tested": [
-    "relation_delta_limited",
     "credit_transfer_limited",
     "mission_offer",
     "trade_request",

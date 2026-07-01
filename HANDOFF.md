@@ -1,6 +1,6 @@
-# HANDOFF — x4_ai_influence mod build (Forge UI)
+# HANDOFF — x4_ai_influence mod build
 
-> Paste the prompt below into a new session to resume. Updated 2026-06-24.
+> Paste the prompt below into a new session to resume. Updated 2026-06-30.
 
 ---
 
@@ -16,13 +16,19 @@ READ FIRST (your cross-session memory):
   (md\ai_influence_test_chat.xml, _contract.xml, _main.xml, ui.xml) — ground every cue against it.
 
 HARD RULES (enforce 100%, in F:\DEV_ENV\CLAUDE.md):
-- Build the mod side ONLY through the Forge UI (clicks/keyboard via Claude-in-Chrome), NOT the
-  /api/agent API, NOT javascript_tool. If a build step is impossible/finicky in the UI, that's a
-  Forge bug to FIX in the Forge codebase, then continue in the UI.
-- Clean rename test→real: build in the clean `ai_influence` namespace (not ai_influence_test).
-  Keep ai_influence_test installed as reference.
-- Update the correct ROADMAP at the END of every task (mod/bridge → Neural Link ROADMAP;
-  Forge-codebase → Forge ROADMAP). Keep them separate.
+- Build/author through the Forge agent API or files as needed; the old UI-only mandate is lifted.
+- Clean rename test→real: build in the clean `ai_influence` namespace (not ai_influence_test). Keep
+  ai_influence_test installed as reference.
+- Update the correct ROADMAP at the END of every task (mod/bridge → Neural Link ROADMAP; Forge-codebase → Forge
+  ROADMAP). Keep them separate.
+- Follow the 2026-06-30 Bannerlord-proven Player2 action architecture: Player2 proposes intent/actions; Neural
+  Link/X4 validate, whitelist, execute, and prove. No game-state action is ✅ until it is seen in-game.
+
+GOVERNING ACTION PATTERN:
+`X4 context -> bridge -> Player2 JSON {response/reply, actions[]} -> bridge audit/normalize -> X4 validator -> MD/Lua execution`.
+Player2 owns voice, preference, doctrine-flavored judgment, and proposed actions. X4 owns facts, legality, bounds,
+cooldowns, object lookup, execution, and proof. Failed/unparsed Player2 decisions defer; they do not math-fallback to
+a real action.
 
 DONE + VERIFIED so far (UI-only, COMPILER OK):
 - Chat_boot + Poll_tick heartbeat cue, matches reference exactly (event_game_loaded →
