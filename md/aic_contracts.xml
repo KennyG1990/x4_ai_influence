@@ -1,0 +1,331 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="aic_contracts" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- #75 G3 (ADR-003): the PLAYER claim-surface over the universal job market. The Lua poller
+       (AI_Influence.PollContractOffers) raises 'contract_offer' for each NEW player-eligible open job and
+       'contract_withdraw' when a job leaves the market (claimed by an NPC / cancelled / repriced-reposted).
+       Grounded against vanilla primitives (see wiki mission-offer-recipe.md): create_cue_actor + create_offer
+       (reward/faction/duration) + event_offer_accepted + remove_offer ("no effect if accepted").
+       Accept -> raise AIChat.contract_claimed -> Lua POSTs /v1/jobs/claim (FCFS lock, bridge G1).
+       Completion/payout is G4 (not in this file). -->
+  <cues>
+    <library name="OnAccepted">
+      <!-- shared accept handler (kuertee_emergent_missions_escort.xml:334-350 order): mission-manager entry
+           via create_mission+offercue, objective from the briefing, stats, offer removed, THEN our claim. -->
+      <actions>
+        <set_value name="$accepted" exact="true" />
+        <create_mission cue="parent" offercue="parent" abortable="true" />
+        <set_objective_from_briefing cue="parent" step="1" />
+        <set_value name="stat.missions_accepted" operation="add" />
+        <remove_offer cue="parent" />
+        <raise_lua_event name="'AIChat.contract_claimed'" param="'job=' + $job" />
+        <!-- registry entry KEPT on accept (#27): FRAGO dispatch targets the live mission cue via
+             Registry.$ByJob. Removal happens on abort/withdraw/cleanup instead. -->
+        <debug_text text="'AIC contract ACCEPTED job=' + $job" filter="general" />
+        <!-- G4 stage 5 (vanilla parity): activate the mission — endtime + RML gameplay handoff -->
+        <signal_cue cue="Activate" />
+      </actions>
+    </library>
+    <cue name="Registry" namespace="this">
+      <conditions>
+        <event_game_loaded />
+      </conditions>
+      <actions>
+        <set_value name="$ByJob" exact="table[]" />
+      </actions>
+    </cue>
+    <cue name="Offer_contract" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'contract_offer'" />
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3" />
+        <set_value name="$job" exact="if $d.$job_id? then $d.$job_id else ''" />
+        <set_value name="$fid" exact="if $d.$faction? then $d.$faction else ''" />
+        <!-- MONEY IS CENTS: Lua sends bridge-credits*100; (1Cr * cents) yields the right money value
+             (in-game proven: passing raw credits displayed reward/100). -->
+        <set_value name="$reward" exact="if $d.$reward? then ((1Cr) * ($d.$reward)) else 1000000Cr" />
+        <set_value name="$title" exact="if $d.$title? and $d.$title != null then $d.$title else 'FACTION CONTRACT'" />
+        <set_value name="$desc" exact="if $d.$summary? and $d.$summary != null and $d.$summary != '' then $d.$summary else 'A contract is open for bids — see the listed reward. Fulfil the objective and payment follows.'" />
+        <debug_text text="'AIC contract pre-offer title=' + $title + ' reward=' + $reward" filter="general" />
+        <set_value name="$key" exact="'$' + $job" />
+        <do_if value="$job != '' and $fid != '' and faction.{$fid}? and not Registry.$ByJob.{$key}?">
+          <!-- offer hangs on a real station of the issuing faction; the offer is advertised in the player's
+               current sector list (v1 of the 'universal board' surface). -->
+          <find_station name="$OfferObject" owner="faction.{$fid}" space="player.galaxy" />
+          <do_if value="$OfferObject? and $OfferObject != null">
+            <create_cue_actor cue="this" name="$Client">
+              <select faction="faction.{$fid}" tags="tag.crew" />
+              <owner exact="faction.{$fid}" />
+            </create_cue_actor>
+            <!-- vanilla's exact accept-listener shape (genericmissions.xml ShowOffer): a VARIABLE holding the
+                 offer cue, listened to by a child cue — the `parent` keyword form did not fire (#75-G3). -->
+            <set_value name="$OfferCue" exact="this" />
+            <set_value name="$mtype" exact="if $d.$mtype? and $d.$mtype != null then $d.$mtype else 'fight'" />
+            <set_value name="$otype" exact="if $d.$otype? and $d.$otype != null then $d.$otype else 'custom'" />
+            <set_value name="$task" exact="if $d.$task? and $d.$task != null then $d.$task else $desc" />
+            <!-- G4: gameplay-handoff inputs (Lua already sends them) -->
+            <set_value name="$jtype" exact="if $d.$job_type? and $d.$job_type != null then $d.$job_type else ''" />
+            <set_value name="$tsector" exact="if $d.$sector? and $d.$sector != null then $d.$sector else ''" />
+            <set_value name="$tfaction" exact="if $d.$target? and $d.$target != null then $d.$target else ''" />
+            <!-- G3 diag: name the null attr ('null is not a string' persists in create_offer) + catch async
+                 client creation. Runs AFTER the set_values it inspects (previous order made it throw itself). -->
+            <debug_text filter="general" text="'AIC attrs cli=' + (if $Client? and $Client != null then 'ok' else 'NULL')
+                  + ' title=' + (if $title != null then 'ok' else 'NULL')
+                  + ' desc=' + (if $desc != null then 'ok' else 'NULL')
+                  + ' task=' + (if $task? and $task != null then 'ok' else 'NULL')
+                  + ' mtype=' + (if $mtype? and $mtype != null then $mtype else 'NULL')
+                  + ' otype=' + (if $otype? and $otype != null then $otype else 'NULL')
+                  + ' station=' + (if $OfferObject? and $OfferObject != null then 'ok' else 'NULL')" />
+            <create_offer cue="this" location="$OfferObject" name="$title" description="$desc"
+                          difficulty="level.easy" actor="$Client" faction="faction.{$fid}"
+                          type="missiontype.{$mtype}" reward="$reward" duration="2h">
+              <briefing>
+                <objective step="1" action="objective.{$otype}" text="$task" />
+              </briefing>
+            </create_offer>
+            <set_value name="Registry.$ByJob.{$key}" exact="this" />
+            <debug_text text="'AIC contract offered job=' + $job + ' fid=' + $fid + ' reward=' + $reward" filter="general" />
+          </do_if>
+          <do_else>
+            <debug_text text="'AIC contract skipped (no station) job=' + $job + ' fid=' + $fid" filter="general" />
+          </do_else>
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="Accepted">
+          <!-- THE PROVEN SHAPE (kuertee_emergent_missions_escort.xml:325-352, shipping mod):
+               "event_offer_accepted doesn't work" for modded create_offer offers — menu_map.lua /
+               menu_missionbriefing.lua instead SIGNAL THE OFFER'S ACTOR with param 'accept'.
+               hasmissionoffer/hasmission checks evaluate at event time (safe); $Client is a parent var but
+               object= filters resolve at delivery, not registration (kuertee ships this exact form). -->
+          <conditions>
+            <event_object_signalled object="$Client" param="'accept'" />
+            <check_value value="parent.hasmissionoffer" />
+            <check_value value="not parent.hasmission" />
+            <check_value value="not $accepted?" />
+          </conditions>
+          <actions>
+            <include_actions ref="OnAccepted" />
+          </actions>
+        </cue>
+        <cue name="Accepted_offerevent">
+          <!-- belt-and-braces: vanilla's own listener shape (static sibling cue name — the only form that
+               registers; md.xsd requires the cue attr). If the engine ever fires it for modded offers, the
+               $accepted guard keeps the two listeners idempotent. -->
+          <conditions>
+            <event_offer_accepted cue="Offer_contract" />
+            <check_value value="not $accepted?" />
+          </conditions>
+          <actions>
+            <include_actions ref="OnAccepted" />
+          </actions>
+        </cue>
+        <cue name="Aborted">
+          <!-- kuertee_emergent_missions_escort.xml:436 — player abort raises event_mission_aborted on the
+               mission's cue; without this listener the aborted mission LINGERS in the log (Ken's report).
+               remove_mission clears the log entry; the bridge release reopens the job so the market
+               re-offers it; cancel_cue ends this contract instance (a re-offer is a fresh instance). -->
+          <conditions>
+            <event_mission_aborted cue="Offer_contract" />
+          </conditions>
+          <actions>
+            <!-- type="aborted" = vanilla parity (gm_escort.xml:918) — routes through the engine's abort
+                 accounting instead of a bare removal -->
+            <remove_mission cue="parent" type="aborted" />
+            <!-- abort costs reputation (Ken 2026-07-01): vanilla pays completion notoriety via
+                 add_faction_relation (gm_bringitems.xml:1040) — the abort ding is the same mechanism,
+                 negative and small. No relationchangereason.missionaborted exists; missionfailed is closest. -->
+            <do_if value="$fid != '' and faction.{$fid}?">
+              <add_faction_relation faction="faction.player" otherfaction="faction.{$fid}" value="-0.02"
+                                    reason="relationchangereason.missionfailed" />
+              <write_to_logbook category="missions"
+                                title="'Contract abandoned: ' + $title"
+                                text="faction.{$fid}.knownname + ' notes the breach of contract. Standing with them has suffered.'"
+                                faction="faction.{$fid}" />
+            </do_if>
+            <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
+            <remove_value name="Registry.$ByJob.{$key}" />
+            <debug_text text="'AIC contract ABORTED job=' + $job" filter="general" />
+            <cancel_cue cue="parent" />
+          </actions>
+        </cue>
+        <cue name="Activate">
+          <!-- G4 stage 5 (wiki vanilla-mission-parity-audit): vanilla missions activate with an endtime and
+               hand ALL live gameplay to an RML library (gm_patrol.xml:609-639). PATROL FIRST (Ken: integrate one
+               type, verify in-game, then template). Signalled by OnAccepted; children only enable after these
+               actions run, so RML params see the variables (late binding — the $OfferCue lesson inverted). -->
+          <conditions>
+            <event_cue_signalled />
+          </conditions>
+          <actions>
+            <set_value name="$MC" exact="parent" />
+            <update_mission cue="parent" endtime="player.age + 4h" />
+            <!-- resolve the CONTRACT's target sector by name (find_sector: DeadAir dynamicwar.xml:649 shape);
+                 fallback = the offer station's sector -->
+            <set_value name="$PatrolSector" exact="$OfferObject.sector" />
+            <do_if value="$tsector != ''">
+              <find_sector name="$AllSectors" space="player.galaxy" multiple="true" />
+              <do_for_each name="$s" in="$AllSectors">
+                <do_if value="$s.knownname == $tsector">
+                  <set_value name="$PatrolSector" exact="$s" />
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <!-- FULL 8-element destination entry — RML_Patrol.StartMission reads .{2}..{8} unguarded
+                 (in-game proven: 1-element entry threw "Property lookup failed: $DestinationEntry.{2..7}").
+                 Shape copied from story_diplomacy_intro.xml:4614:
+                 [target, offset, range, alias, objectivetype, mintime, maxtime, spawnoffset] -->
+            <set_value name="$Destinations"
+                       exact="[[$PatrolSector, null, 0m, $PatrolSector.knownname, objective.patrol, 1min, 10min, null]]" />
+            <set_value name="$EnemyFactions" exact="if $tfaction != '' and faction.{$tfaction}? then [faction.{$tfaction}] else [faction.xenon]" />
+            <debug_text text="'AIC contract ACTIVATED job=' + $job + ' jtype=' + $jtype + ' patrolsector=' + $PatrolSector.knownname" filter="general" />
+          </actions>
+          <cues>
+            <cue name="Patrol_Gate" onfail="cancel">
+              <conditions>
+                <check_value value="$jtype == 'patrol'" />
+              </conditions>
+              <cues>
+                <cue name="Patrol_Ref" ref="md.RML_Patrol.Patrol">
+                  <param name="EndSignalCue" value="MissionEnded" />
+                  <param name="MissionCue" value="$MC" />
+                  <param name="Faction" value="faction.{$fid}" />
+                  <param name="EnemyFactions" value="$EnemyFactions" />
+                  <param name="Destinations" value="$Destinations" />
+                </cue>
+              </cues>
+            </cue>
+            <cue name="MissionEnded">
+              <!-- vanilla-exact end handling (gm_patrol.xml:1017-1073): RML signals here with feedback -->
+              <conditions>
+                <event_cue_signalled />
+              </conditions>
+              <actions>
+                <do_if value="MissionEnded.$EndFeedbackValue" max="0">
+                  <debug_text text="'AIC contract FAILED (RML feedback) job=' + $job" filter="general" />
+                  <remove_mission cue="$MC" type="failed" />
+                  <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
+                  <remove_value name="Registry.$ByJob.{$key}" />
+                </do_if>
+                <do_else>
+                  <add_faction_relation faction="faction.player" otherfaction="faction.{$fid}" value="0.04"
+                                        reason="relationchangereason.missioncompleted" />
+                  <reward_player money="$reward" />
+                  <set_value name="stat.missions_completed" operation="add" />
+                  <write_to_logbook category="missions" title="'Contract fulfilled: ' + $title"
+                                    text="faction.{$fid}.knownname + ' confirms the contract complete. Payment released from the faction treasury.'"
+                                    faction="faction.{$fid}" />
+                  <remove_mission cue="$MC" type="completed" />
+                  <raise_lua_event name="'AIChat.contract_completed'" param="'job=' + $job" />
+                  <remove_value name="Registry.$ByJob.{$key}" />
+                  <debug_text text="'AIC contract COMPLETED job=' + $job" filter="general" />
+                </do_else>
+              </actions>
+            </cue>
+            <cue name="MissionTimeout">
+              <!-- vanilla shape (gm_patrol.xml:1002): expiry = failed. Delay starts at ACTIVATION (this subtree
+                 only enables post-accept). hasmission guard: no-op if already ended. -->
+              <delay exact="4h" />
+              <actions>
+                <do_if value="$MC.hasmission">
+                  <debug_text text="'AIC contract TIMEOUT job=' + $job" filter="general" />
+                  <remove_mission cue="$MC" type="failed" />
+                  <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
+                  <remove_value name="Registry.$ByJob.{$key}" />
+                </do_if>
+              </actions>
+            </cue>
+          </cues>
+        </cue>
+        <cue name="Reregister_on_load">
+          <!-- #27: the Registry cue resets $ByJob on every game load — ACCEPTED (surviving) instances re-enter
+               so FRAGO dispatch can still find their mission cue. 2s delay dodges same-event ordering vs the
+               Registry reset. -->
+          <conditions>
+            <event_game_loaded />
+          </conditions>
+          <delay exact="2s" />
+          <actions>
+            <do_if value="$accepted? and $key?">
+              <set_value name="Registry.$ByJob.{$key}" exact="parent" />
+            </do_if>
+          </actions>
+        </cue>
+        <cue name="KeepAlive" checkinterval="1min"
+             comment="vanilla ShowOffer_KeepAlive hack (genericmissions.xml:712): a never-true check keeps this
+                      offer INSTANCE alive so the accept event has a live listener — without it the instance is
+                      disposed the moment its actions complete, which is why attempts 1-3 never fired.">
+          <conditions>
+            <check_value value="false" />
+          </conditions>
+        </cue>
+        <cue name="Cleanup_on_load">
+          <conditions>
+            <event_game_loaded />
+          </conditions>
+          <actions>
+            <!-- G5: savegame-persisted OFFER instances are STALE on load (registry + Lua tracker reset; prices
+                 may have moved). Withdraw + self-cancel — but NEVER touch an ACCEPTED (active) mission. The
+                 offers poll re-creates fresh un-accepted offers within a tick. -->
+            <do_if value="not $accepted?">
+              <debug_text text="'AIC contract stale-on-load cleanup job=' + (if $job? then $job else '?')" filter="general" />
+              <!-- parent (keyword) is fine in ACTIONS — only condition-time evaluation predates parent vars -->
+              <remove_offer cue="parent" />
+              <cancel_cue cue="parent" />
+            </do_if>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+    <!-- (Accepted_any removed: md.xsd requires the cue attr on event_offer_accepted — the bare form was
+         schema-illegal and never registered. Forge finding #8: Forge validation didn't catch use="required".) -->
+    <cue name="Frago_dispatch" instantiate="true" namespace="this">
+      <!-- #27 MD half: a contract_frago action (bridge push_contract_fragos → influence drain → Lua 'action'
+           event) amends the player's LIVE accepted mission — the "element under command" moment. Targets the
+           mission cue via Registry.$ByJob (kept on accept, restored on load). update_mission with
+           name/description is the kuertee shipping shape (kuertee_emergent_missions_escort.xml:735) — the
+           engine accepts it although the doc XSD only lists cue/duration. -->
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'action'" />
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3" />
+        <do_if value="$d.$type? and $d.$type == 'contract_frago' and $d.$job_id?">
+          <set_value name="$key" exact="'$' + $d.$job_id" />
+          <do_if value="Registry.$ByJob.{$key}?">
+            <set_value name="$c" exact="Registry.$ByJob.{$key}" />
+            <do_if value="$c.$accepted? and $c.hasmission">
+              <set_value name="$fname" exact="if $d.$faction? and faction.{$d.$faction}? then faction.{$d.$faction}.knownname else 'High Command'" />
+              <set_value name="$summary" exact="if $d.$summary? then $d.$summary else 'Situation change. Adjust posture and continue the mission.'" />
+              <update_mission cue="$c" description="'FRAGO — ' + $summary" />
+              <show_notification text="'FRAGO from ' + $fname + ' High Command'" />
+              <write_to_logbook category="missions" title="'FRAGO: ' + $c.$title" text="$fname + ' High Command amends your contract: ' + $summary" />
+              <debug_text text="'AIC FRAGO applied job=' + $d.$job_id" filter="general" />
+            </do_if>
+            <do_else>
+              <debug_text text="'AIC FRAGO skipped (not accepted/no mission) job=' + $d.$job_id" filter="general" />
+            </do_else>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="Withdraw_contract" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'contract_withdraw'" />
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3" />
+        <set_value name="$job" exact="if $d.$job_id? then $d.$job_id else ''" />
+        <set_value name="$key" exact="'$' + $job" />
+        <!-- NEVER tear down an ACCEPTED contract: Accepted removes the registry key, but guard $accepted too
+             (same-tick race) — cancel_cue on an accepted mission's cue kills the player's active mission. -->
+        <do_if value="$job != '' and Registry.$ByJob.{$key}? and not Registry.$ByJob.{$key}.$accepted?">
+          <remove_offer cue="Registry.$ByJob.{$key}" />
+          <cancel_cue cue="Registry.$ByJob.{$key}" />
+          <remove_value name="Registry.$ByJob.{$key}" />
+          <debug_text text="'AIC contract withdrawn job=' + $job" filter="general" />
+        </do_if>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

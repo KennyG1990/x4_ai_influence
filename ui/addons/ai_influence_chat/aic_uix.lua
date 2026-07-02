@@ -400,6 +400,110 @@ function AI_Influence.PollOpordOrders(saveId)
     end)
 end
 
+-- #75 G3: contract offers — poll the bridge for player-eligible OPEN jobs, materialize/withdraw mission offers
+-- via MD (aic_contracts.xml). NEW job → 'contract_offer' ui event; job gone (claimed by NPC / cancelled /
+-- repriced+reposted) → 'contract_withdraw'. Every silent early-return logs (the #70b lesson).
+function AI_Influence.PollContractOffers(saveId)
+    local req = newRequest("POST"); if not req then log("contract poll: djfhe request unavailable") return end
+    req:setUrl(BRIDGE_URL .. "/v1/jobs/offers")
+    req:setBody((json and json.encode) and json.encode({ save_id = saveId or "unindexed" }) or { save_id = saveId })
+    req:send(function(resp, err)
+        if err then log("contract poll err: " .. tostring(err)) return end
+        local content, jerr
+        if resp and resp.getJson then content, jerr = resp:getJson() end
+        if jerr or not content or not content.offers or not AddUITriggeredEvent then
+            log("contract poll: unusable response jerr=" .. tostring(jerr))
+            return
+        end
+        AI_Influence._contracts = AI_Influence._contracts or {}
+        local seen = {}
+        for _, o in ipairs(content.offers) do
+            if type(o) == "table" and o.job_id then
+                seen[o.job_id] = true
+                -- G5 repricing: tracker stores the REWARD (was just `true`). A FRAGO escalation raise changes
+                -- the bridge reward; the stale on-screen offer is withdrawn and re-offered at the new price.
+                local prev = AI_Influence._contracts[o.job_id]
+                if prev ~= nil and prev ~= true and tonumber(prev) ~= tonumber(o.reward or 0) then
+                    AI_Influence._contracts[o.job_id] = nil
+                    AddUITriggeredEvent("ai_influence", "contract_withdraw", { job_id = o.job_id })
+                    log("contract reprice -> withdraw job=" .. tostring(o.job_id) ..
+                        " " .. tostring(prev) .. " -> " .. tostring(o.reward))
+                end
+                if not AI_Influence._contracts[o.job_id] then
+                    AI_Influence._contracts[o.job_id] = tonumber(o.reward or 0) or true
+                    local mtypes = { patrol = "fight", escort = "fight", privateer = "destroy",
+                                     bounty = "destroy", supply = "deliver", recon = "find" }
+                    local otypes = { patrol = "custom", escort = "custom", privateer = "destroy",
+                                     bounty = "destroy", supply = "deliver", recon = "find" }
+                    AddUITriggeredEvent("ai_influence", "contract_offer", {
+                        -- reward in CREDITS: MD casts via (1Cr * N) = N Cr (proven in-game across 3 builds;
+                        -- only a RAW float with no money cast displays /100 — never multiply here)
+                        job_id = o.job_id, faction = o.faction, reward = (o.reward or 0),
+                        job_type = o.job_type or "contract",
+                        mtype = mtypes[tostring(o.job_type or "")] or "fight",
+                        -- vanilla-style sentence case ("Ministry Escort Contract"), not ALL CAPS (Ken 2026-07-01)
+                        title = tostring(o.faction_name or o.faction or "Faction") .. " " ..
+                                (tostring(o.job_type or "contract"):gsub("^%l", string.upper)) .. " Contract",
+                        -- the five-paragraph order (SMESC) IS the briefing; the OBJECTIVE is the element's task
+                        summary = o.briefing or o.summary,
+                        task = o.task, otype = otypes[tostring(o.job_type or "")] or "custom",
+                        sector = o.target_sector, target = o.target_faction })
+                    log("contract offer -> MD job=" .. tostring(o.job_id) ..
+                        " task?" .. tostring(o.task ~= nil) .. " briefing?" .. tostring(o.briefing ~= nil) ..
+                        " LUAV=3")  -- G3 diag: which Lua version is live + does the bridge payload carry task
+                end
+            end
+        end
+        for jid, _ in pairs(AI_Influence._contracts) do
+            if not seen[jid] then
+                AI_Influence._contracts[jid] = nil
+                AddUITriggeredEvent("ai_influence", "contract_withdraw", { job_id = jid })
+                log("contract withdraw -> MD job=" .. tostring(jid))
+            end
+        end
+    end)
+end
+
+-- MD reports the player ACCEPTED a contract offer → claim the job on the bridge (FCFS lock).
+function AI_Influence.ContractClaimed(param)
+    local job = string.match(tostring(param or ""), "job=([^|]*)")
+    if not job or job == "" then log("contract claim: no job id in param") return end
+    local req = newRequest("POST"); if not req then log("contract claim: djfhe request unavailable") return end
+    req:setUrl(BRIDGE_URL .. "/v1/jobs/claim")
+    local payload = { save_id = AI_Influence._saveId or "unindexed", job_id = job, claimant = "player" }
+    req:setBody((json and json.encode) and json.encode(payload) or payload)
+    req:send(function(_, err) if err then log("contract claim err: " .. tostring(err)) end end)
+end
+local function onContractClaimed(_, param) AI_Influence.ContractClaimed(param) end
+
+-- MD reports the player ABORTED an accepted contract → release the claim (job reopens on the market).
+function AI_Influence.ContractAborted(param)
+    local job = string.match(tostring(param or ""), "job=([^|]*)")
+    if not job or job == "" then log("contract abort: no job id in param") return end
+    -- forget it locally so the next offers poll re-offers it as a fresh contract
+    if AI_Influence._contracts then AI_Influence._contracts[job] = nil end
+    local req = newRequest("POST"); if not req then log("contract abort: djfhe request unavailable") return end
+    req:setUrl(BRIDGE_URL .. "/v1/jobs/release")
+    local payload = { save_id = AI_Influence._saveId or "unindexed", job_id = job, claimant = "player" }
+    req:setBody((json and json.encode) and json.encode(payload) or payload)
+    req:send(function(_, err) if err then log("contract abort err: " .. tostring(err)) end end)
+end
+local function onContractAborted(_, param) AI_Influence.ContractAborted(param) end
+
+-- MD reports the mission COMPLETED (RML end-feedback success) → vetted payout on the bridge (G4).
+function AI_Influence.ContractCompleted(param)
+    local job = string.match(tostring(param or ""), "job=([^|]*)")
+    if not job or job == "" then log("contract complete: no job id in param") return end
+    if AI_Influence._contracts then AI_Influence._contracts[job] = nil end
+    local req = newRequest("POST"); if not req then log("contract complete: djfhe request unavailable") return end
+    req:setUrl(BRIDGE_URL .. "/v1/job/complete")
+    local payload = { save_id = AI_Influence._saveId or "unindexed", job_id = job, claimant = "player",
+                      evidence = { source = "md_mission_ended", game_time = getElapsedTime and getElapsedTime() or 0 } }
+    req:setBody((json and json.encode) and json.encode(payload) or payload)
+    req:send(function(_, err) if err then log("contract complete err: " .. tostring(err)) end end)
+end
+local function onContractCompleted(_, param) AI_Influence.ContractCompleted(param) end
+
 -- MD issued a real create_order → record the lease on the bridge, then mark the order issued (chained POSTs).
 function AI_Influence.OpordIssued(param)
     local ctx = {}
@@ -471,6 +575,8 @@ function AI_Influence.SyncRelations(param)
     if AI_Influence._econTick % 8 == 3 then AI_Influence.AdvanceOperations(sid) end
     -- OPORD execution issuer: poll tasks awaiting a real ship order → MD finds ship + create_order.
     if AI_Influence._econTick % 8 == 5 then AI_Influence.PollOpordOrders(sid) end
+    -- #75 G3: contract offers — own tick offset (de-burst rule, #70b).
+    if AI_Influence._econTick % 8 == 1 then AI_Influence.PollContractOffers(sid) end
 end
 
 local function onSyncRelations(_, param) AI_Influence.SyncRelations(param) end
@@ -590,6 +696,9 @@ function AI_Influence.SyncInfluence(saveId)
                         if a.op then tp.op = tostring(a.op) end
                         -- SPEC 3.3-B military order field (patrol|raid)
                         if a.kind then tp.kind = tostring(a.kind) end
+                        -- #27 contract_frago fields: amend the player's LIVE accepted mission (MD Frago_dispatch)
+                        if a.job_id then tp.job_id = tostring(a.job_id) end
+                        if a.summary then tp.summary = tostring(a.summary) end
                         pcall(function() AddUITriggeredEvent("ai_influence", "action", tp) end)
                     end
                 end
@@ -1211,6 +1320,9 @@ local function init()
     RegisterEvent("AIChat.opord_order_event", onOpordOrderEvent)
     RegisterEvent("AIChat.opord_issued", onOpordIssued)
     RegisterEvent("AIChat.opord_force_request", onOpordForceRequest)
+    RegisterEvent("AIChat.contract_claimed", onContractClaimed)
+    RegisterEvent("AIChat.contract_aborted", onContractAborted)
+    RegisterEvent("AIChat.contract_completed", onContractCompleted)
     log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.suggest, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")
 end
 init()

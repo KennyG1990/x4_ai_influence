@@ -36,22 +36,9 @@
         <set_value name="md.ai_influence_conversation.State.$t3" exact="'Have you heard any news lately?'"/>
         <set_value name="md.ai_influence_conversation.State.$ready" exact="true"/>
         <add_player_choice_sub section="AIInf_Speak" text="'Speak to AI'"/>
-        <add_player_choice_sub section="AIInf_ForceWar" text="'[TEST] Declare war on me'"/>
-      </actions>
-    </cue>
-    <cue name="ForceWar_handler" instantiate="true" namespace="this">
-      <conditions>
-        <event_conversation_next_section section="AIInf_ForceWar"/>
-      </conditions>
-      <actions>
-        <set_value name="$npc" exact="md.ai_influence_conversation.State.$current_npc"/>
-        <do_if value="$npc and $npc.owner?">
-          <set_value name="$A" exact="$npc.owner"/>
-          <set_value name="$old" exact="$A.relationto.{faction.player}"/>
-          <set_faction_relation faction="$A" otherfaction="faction.player" value="-1.0"/>
-          <write_to_logbook category="alerts" title="'[AI TEST] WAR: ' + $A.knownname + ' vs you'" text="'Forced relation to -1.0 (was ' + $old + '). Watch for ships engaging.'" faction="$A"/>
-          <show_notification text="'[AI TEST] ' + $A.knownname + ' now hostile to you (was ' + $old + ')'"/>
-        </do_if>
+        <!-- [TEST] Declare war on me + ForceWar_handler REMOVED (Ken 2026-07-01): the early
+             conversation→gamestate proving slice. Real relation moves are Player2-decided, validated,
+             band-limited (validate_relation_move) — never a forced set_faction_relation. -->
       </actions>
     </cue>
     <cue name="On_suggestions" instantiate="true" namespace="this">

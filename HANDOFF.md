@@ -29,6 +29,9 @@ The mod is BUILT and deployed. All backlog tasks #1–#67 closed; 22/22 bridge s
   logic against clean data, so any recorded id (e.g. in old ROADMAP entries) is historical, not current. ALWAYS
   resolve the active save live: `GET http://127.0.0.1:8713/api/memory/saves` → most-recent `last_active_ms`.
 - Live extension mount forbids deletes — overwrite/truncate, never delete. `.forgekeep` protects the bridge on deploy.
+- WORKFLOW v2 (2026-07-01): agents NEVER run git — commits are Ken's own via Antigravity (ROADMAP close title =
+  suggested message); read BACKLOG.md first; decisions.md (ADRs) checked during reconcile; significant diffs
+  cross-model reviewed. Authoritative: F:\DEV_ENV\CLAUDE.md.
 
 ## Frontier
 
