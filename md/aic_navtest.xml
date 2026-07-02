@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="aic_navtest" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- STRIPPED (D housekeeping, 2026-07-02): the /navtest fog-of-war diagnostic served its purpose — the
+       guidance mechanism was proven in-game (ROADMAP #92: yellow bar + NAV TEST chain) and the contract
+       objectives now carry real targets. Empty stub kept because the extensions mount forbids deletes. -->
+  <cues>
+  </cues>
+</mdscript>

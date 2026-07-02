@@ -46,7 +46,9 @@
         <set_value name="$reward" exact="if $d.$reward? then ((1Cr) * ($d.$reward)) else 1000000Cr" />
         <set_value name="$title" exact="if $d.$title? and $d.$title != null then $d.$title else 'FACTION CONTRACT'" />
         <set_value name="$desc" exact="if $d.$summary? and $d.$summary != null and $d.$summary != '' then $d.$summary else 'A contract is open for bids — see the listed reward. Fulfil the objective and payment follows.'" />
-        <debug_text text="'AIC contract pre-offer title=' + $title + ' reward=' + $reward" filter="general" />
+        <!-- (#70/G3 pre-offer + attrs diags stripped 2026-07-02 per D — the 'null is not a string' root cause
+             is FIXED (#93, objective verbs); lifecycle lines (offered/ACCEPTED/ACTIVATED/BOUND/ABORTED/
+             COMPLETED) are KEPT as the permanent in-game evidence layer) -->
         <set_value name="$key" exact="'$' + $job" />
         <do_if value="$job != '' and $fid != '' and faction.{$fid}? and not Registry.$ByJob.{$key}?">
           <!-- offer hangs on a real station of the issuing faction; the offer is advertised in the player's
@@ -67,15 +69,12 @@
             <set_value name="$jtype" exact="if $d.$job_type? and $d.$job_type != null then $d.$job_type else ''" />
             <set_value name="$tsector" exact="if $d.$sector? and $d.$sector != null then $d.$sector else ''" />
             <set_value name="$tfaction" exact="if $d.$target? and $d.$target != null then $d.$target else ''" />
-            <!-- G3 diag: name the null attr ('null is not a string' persists in create_offer) + catch async
-                 client creation. Runs AFTER the set_values it inspects (previous order made it throw itself). -->
-            <debug_text filter="general" text="'AIC attrs cli=' + (if $Client? and $Client != null then 'ok' else 'NULL')
-                  + ' title=' + (if $title != null then 'ok' else 'NULL')
-                  + ' desc=' + (if $desc != null then 'ok' else 'NULL')
-                  + ' task=' + (if $task? and $task != null then 'ok' else 'NULL')
-                  + ' mtype=' + (if $mtype? and $mtype != null then $mtype else 'NULL')
-                  + ' otype=' + (if $otype? and $otype != null then $otype else 'NULL')
-                  + ' station=' + (if $OfferObject? and $OfferObject != null then 'ok' else 'NULL')" />
+            <set_value name="$urgency" exact="if $d.$urgency? and $d.$urgency != null then $d.$urgency else 3" />
+            <set_value name="$bindname" exact="if $d.$bind_name? and $d.$bind_name != null then $d.$bind_name else ''" />
+            <!-- A4: the VERB gates gameplay (mission-task-verbs doctrine); bridge always sends one -->
+            <set_value name="$verb" exact="if $d.$task_verb? and $d.$task_verb != null then $d.$task_verb else 'patrol'" />
+            <set_value name="$wareid" exact="if $d.$ware? and $d.$ware != null then $d.$ware else ''" />
+            <set_value name="$safesector" exact="if $d.$safe_sector? and $d.$safe_sector != null then $d.$safe_sector else ''" />
             <create_offer cue="this" location="$OfferObject" name="$title" description="$desc"
                           difficulty="level.easy" actor="$Client" faction="faction.{$fid}"
                           type="missiontype.{$mtype}" reward="$reward" duration="2h">
@@ -151,15 +150,29 @@
         </cue>
         <cue name="Activate">
           <!-- G4 stage 5 (wiki vanilla-mission-parity-audit): vanilla missions activate with an endtime and
-               hand ALL live gameplay to an RML library (gm_patrol.xml:609-639). PATROL FIRST (Ken: integrate one
-               type, verify in-game, then template). Signalled by OnAccepted; children only enable after these
-               actions run, so RML params see the variables (late binding — the $OfferCue lesson inverted). -->
+               hand ALL live gameplay to an RML library (gm_patrol.xml:609-639). Signalled by OnAccepted;
+               children only enable after these actions run, so RML params see the variables (late binding).
+
+               ⚠ VERB GATE REGISTRY (keep current — every fix to the shared bind/ref/end shape propagates to
+               ALL of these by hand; see wiki adding-a-mission-verb runbook for the 6 layers a new verb needs):
+                 Patrol_Gate    verbs: patrol|secure   engine: RML_Patrol            bind: sector (Destinations)
+                 Follow_Gate    verb:  follow_support  engine: RML_Follow_Object     bind: friendly fight ship
+                 Recon_Gate     verb:  recon           engine: RML_Scan              bind: enemy/any station
+                 Interdict_Gate verb:  interdict       engine: RML_Destroy_Entities  bind: enemy trade group
+                 Defend_Gate    verb:  defend          engine: RML_Protect_Object    bind: $bindname station first
+                 Destroy_Gate   verb:  destroy         engine: RML_Destroy_Entities  bind: enemy fight group
+                 Escort_Gate    verb:  escort          engine: RML_Escort            bind: $bindname ship first
+               Shared end path: ALL RMLs signal MissionEnded (success -> payout chain; fail -> release+penalty).
+               Cause-link rule: gates read the bridge $bindname BEFORE searching the galaxy (A2, #113). -->
           <conditions>
             <event_cue_signalled />
           </conditions>
           <actions>
             <set_value name="$MC" exact="parent" />
-            <update_mission cue="parent" endtime="player.age + 4h" />
+            <!-- ONE mission window, urgency-derived (kills the dual 4h literals — 2026-07-02 AAR pick):
+                 urgency 3 → 5h · 5 → 7h. Used by endtime AND MissionTimeout. -->
+            <set_value name="$Window" exact="2h + (1h * $urgency)" />
+            <update_mission cue="parent" endtime="player.age + $Window" />
             <!-- resolve the CONTRACT's target sector by name (find_sector: DeadAir dynamicwar.xml:649 shape);
                  fallback = the offer station's sector -->
             <set_value name="$PatrolSector" exact="$OfferObject.sector" />
@@ -174,16 +187,27 @@
             <!-- FULL 8-element destination entry — RML_Patrol.StartMission reads .{2}..{8} unguarded
                  (in-game proven: 1-element entry threw "Property lookup failed: $DestinationEntry.{2..7}").
                  Shape copied from story_diplomacy_intro.xml:4614:
-                 [target, offset, range, alias, objectivetype, mintime, maxtime, spawnoffset] -->
+                 [target, offset, range, alias, objectivetype, mintime, maxtime, spawnoffset]
+                 WINDOW FROM ASSESSMENT (#100 defect: hardcoded 1min paid 232k for 60 quiet seconds) —
+                 mintime 3min×urgency (u3=9min, u5=15min), maxtime double that. -->
+            <set_value name="$PatrolMin" exact="3min * $urgency" />
             <set_value name="$Destinations"
-                       exact="[[$PatrolSector, null, 0m, $PatrolSector.knownname, objective.patrol, 1min, 10min, null]]" />
+                       exact="[[$PatrolSector, null, 0m, $PatrolSector.knownname, objective.patrol, $PatrolMin, 2 * $PatrolMin, null]]" />
             <set_value name="$EnemyFactions" exact="if $tfaction != '' and faction.{$tfaction}? then [faction.{$tfaction}] else [faction.xenon]" />
+            <!-- UNIVERSAL GUIDANCE (Ken 2026-07-02 "no bar"): the yellow objective bar/guidance only renders
+                 when the objective carries a TARGET (kuertee MissionOffer_AddObjectiveSteps: object=/group= on
+                 every step; rml_flyto.xml:315 same). Text-only objective.custom never draws it. Every contract
+                 now activates with a real fly-to-the-AO objective; RML-wired types (patrol) then override step
+                 1 with their own refined objectives. showunknownpath: the AO may be unexplored (fog of war). -->
+            <set_objective cue="parent" step="1" action="objective.flyto" object="$PatrolSector"
+                           text="$PatrolSector.knownname" showunknownpath="true" />
             <debug_text text="'AIC contract ACTIVATED job=' + $job + ' jtype=' + $jtype + ' patrolsector=' + $PatrolSector.knownname" filter="general" />
           </actions>
           <cues>
             <cue name="Patrol_Gate" onfail="cancel">
+              <!-- A4: gate by VERB — 'secure' shares the patrol engine per the verb table (RML_Patrol) -->
               <conditions>
-                <check_value value="$jtype == 'patrol'" />
+                <check_value value="$verb == 'patrol' or $verb == 'secure'" />
               </conditions>
               <cues>
                 <cue name="Patrol_Ref" ref="md.RML_Patrol.Patrol">
@@ -195,6 +219,508 @@
                 </cue>
               </cues>
             </cue>
+            <cue name="Escort_Gate" onfail="cancel">
+              <!-- G4a (Ken's rule: no contract without a bindable REAL object): requisition a REAL freighter of
+                   the issuing faction and run it INTO the AO — the supply convoy materially happens. RML_Escort
+                   COMMANDEERS the ship (rml_escort.xml:92, cancel_all_orders + move to TargetLocation) — that is
+                   deliberate doctrine: High Command requisitions the hull. Proximity-gated like vanilla
+                   (gm_escort nests Escort_Ref under ReachedDepartureLocation): the RML only starts once the
+                   player is on station with the freighter, so it never departs unescorted. -->
+              <conditions>
+                <check_value value="$verb == 'escort'" />
+              </conditions>
+              <actions>
+                <!-- A2 CAUSE-LINKED BINDING (Ken doctrine: "linked to the cause"): bind THE assessed
+                     threatened asset first — the surviving ship from the events that spooled this operation
+                     (bridge bind_name from assessment.threatened_assets). Name-match, same pattern as
+                     sector-by-name. -->
+                <set_value name="$TargetShip" exact="null" />
+                <do_if value="$bindname != ''">
+                  <find_ship name="$Candidates" space="player.galaxy" owner="faction.{$fid}"
+                             checkoperational="true" multiple="true" />
+                  <do_for_each name="$cs" in="$Candidates">
+                    <do_if value="$cs.knownname == $bindname">
+                      <set_value name="$TargetShip" exact="$cs" />
+                      <debug_text text="'AIC escort CAUSE-LINKED bind: ' + $bindname" filter="general" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <!-- fallback: nearest REAL freighter to the AO (gm_trackship.xml:853 filter shape; #95).
+                     Documented deviation from the strict no-candidate-no-contract rule until A4's bridge-side
+                     verb preconditions land. -->
+                <do_if value="not $TargetShip? or $TargetShip == null">
+                  <find_ship name="$TargetShip" space="player.galaxy" owner="faction.{$fid}"
+                             class="[class.ship_l, class.ship_m]" primarypurpose="purpose.trade"
+                             commandeerable="true" docked="false" checkoperational="true" multiple="false"
+                             sortbydistanceto="$PatrolSector" />
+                </do_if>
+                <do_if value="$TargetShip? and $TargetShip != null and $TargetShip.exists">
+                  <set_value name="$DepartureLocation" exact="$TargetShip.sector" />
+                  <!-- destination must be a DOCKABLE OBJECT, not a sector (in-game proven: RML_Escort calls
+                       $TargetLocation.sector — null on a raw sector, SearchReinforcements spammed errors and
+                       the convoy could never 'arrive'; completion = docking, Ken escorted 20min open-ended).
+                       Issuing faction's station in the AO; fallback any AO station; last resort the offer
+                       station. -->
+                  <find_station name="$TargetLocation" space="$PatrolSector" owner="faction.{$fid}" />
+                  <do_if value="not $TargetLocation? or $TargetLocation == null">
+                    <find_station name="$TargetLocation" space="$PatrolSector" />
+                  </do_if>
+                  <do_if value="not $TargetLocation? or $TargetLocation == null">
+                    <set_value name="$TargetLocation" exact="$OfferObject" />
+                  </do_if>
+                  <!-- leg 1 guidance: the SHIP (X4 renders 'target is in <sector>' then refines in-sector).
+                       THE GOAL IS IN THE ORDER (Ken doctrine): the objective states destination, not just
+                       target — "escort X to safety", never "escort X in circles". -->
+                  <set_objective cue="$MC" step="1" action="objective.escort" object="$TargetShip"
+                                 text="$TargetShip.knownname + ' to ' + (if $TargetLocation? and $TargetLocation != null then $TargetLocation.knownname else $PatrolSector.knownname)"
+                                 showunknownpath="true" />
+                  <debug_text text="'AIC escort BOUND ship=' + $TargetShip.knownname + ' from=' + $DepartureLocation.knownname + ' to=' + (if $TargetLocation? and $TargetLocation != null then $TargetLocation.knownname else 'NULL') + ' (station dock = completion)'" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC escort: no bindable freighter for ' + $fid + ' — AO objective stands, timeout recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Escort_Begin" checkinterval="5s">
+                  <conditions>
+                    <check_value value="$TargetShip? and $TargetShip != null and $TargetShip.exists
+                                        and player.entity.distanceto.{$TargetShip} lt 15km" />
+                  </conditions>
+                  <actions>
+                    <show_notification text="'Convoy escort commencing: ' + $TargetShip.knownname + ' making for ' + $TargetLocation.knownname" />
+                    <debug_text text="'AIC escort BEGINS job=' + $job" filter="general" />
+                  </actions>
+                  <cues>
+                    <cue name="Escort_Ref" ref="md.RML_Escort.Escort">
+                      <param name="MissionCue" value="$MC" />
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="ObjectiveText" value="$TargetShip.knownname + ' to ' + (if $TargetLocation? and $TargetLocation != null then $TargetLocation.knownname else $PatrolSector.knownname)" />
+                      <param name="TargetShip" value="$TargetShip" />
+                      <param name="TargetLocation" value="$TargetLocation" />
+                      <param name="DepartureLocation" value="$DepartureLocation" />
+                      <param name="StartStep" value="2" />
+                      <param name="Faction" value="faction.{$fid}" />
+                      <param name="EnemyFactions" value="$EnemyFactions" />
+                      <param name="NoBoost" value="true" />
+                      <param name="EnemyStrength" value="4" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Recover_Gate" onfail="cancel">
+              <!-- R11 (verb: recover — 'extract materiel from an area not under friendly control'): bind a
+                   REAL abandoned hull (faction.ownerless — vanilla's identity per
+                   interrupt.foundabandonedship.xml); claiming is the NATIVE player action, so no RML — the
+                   end cues sense ownership: player claims it → success; hull destroyed → failure. -->
+              <conditions>
+                <check_value value="$verb == 'recover'" />
+              </conditions>
+              <actions>
+                <find_ship name="$Wreck" space="$PatrolSector" owner="faction.ownerless" multiple="false" />
+                <do_if value="$Wreck? and $Wreck != null and $Wreck.exists">
+                  <set_objective cue="$MC" step="1" action="objective.claim" object="$Wreck"
+                                 text="$Wreck.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC recover BOUND wreck=' + $Wreck.knownname" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC recover: no abandoned hull in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Recover_Claimed" checkinterval="10s">
+                  <conditions>
+                    <check_value value="$Wreck? and $Wreck != null and $Wreck.exists
+                                        and $Wreck.owner == faction.player" />
+                  </conditions>
+                  <actions>
+                    <set_value name="MissionEnded.$EndFeedbackValue" exact="1" />
+                    <signal_cue cue="MissionEnded" />
+                    <debug_text text="'AIC recover CLAIMED — success'" filter="general" />
+                  </actions>
+                </cue>
+                <cue name="Recover_WreckLost">
+                  <conditions>
+                    <event_object_destroyed object="$Wreck" />
+                  </conditions>
+                  <actions>
+                    <set_value name="MissionEnded.$EndFeedbackValue" exact="-1" />
+                    <signal_cue cue="MissionEnded" />
+                  </actions>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Deliver_Gate" onfail="cancel">
+              <!-- R8 (verb: deliver — 'wares received at the station'): a REAL buy offer on a REAL receiving
+                   station (create_trade_offer recipe from story_diplomacy_intro.xml:1355 — the shipping
+                   caller; missioncue-bound so the offer dies with this contract). Amount derives from the
+                   committed reward at avgprice, clamped 10..500 — money and cargo agree (words≠resources). -->
+              <conditions>
+                <check_value value="$verb == 'deliver'" />
+              </conditions>
+              <actions>
+                <do_if value="$wareid != '' and ware.{$wareid}?">
+                  <find_station name="$DelivStation" space="$PatrolSector" owner="faction.{$fid}" />
+                  <do_if value="not $DelivStation? or $DelivStation == null">
+                    <find_station name="$DelivStation" space="$PatrolSector" />
+                  </do_if>
+                  <do_if value="$DelivStation? and $DelivStation != null">
+                    <set_value name="$DelivAmount"
+                               exact="[[($reward / ware.{$wareid}.avgprice), 500].min, 10].max" />
+                    <create_trade_offer buyer="$DelivStation" object="$DelivStation" ware="ware.{$wareid}"
+                                        amount="$DelivAmount" missioncue="namespace" name="$TradeOffer"
+                                        playeronly="true" price="ware.{$wareid}.minprice" />
+                    <create_list name="$TradeOfferList" />
+                    <append_to_list name="$TradeOfferList" exact="$TradeOffer" />
+                    <set_value name="$WareBill" exact="table[]" />
+                    <set_value name="$WareBill.{ware.{$wareid}}" exact="$DelivAmount" />
+                    <set_objective cue="$MC" step="1" action="objective.deliver" object="$DelivStation"
+                                   text="$DelivAmount + ' x ' + ware.{$wareid}.name" showunknownpath="true" />
+                    <debug_text text="'AIC deliver BOUND ' + $DelivAmount + 'x ' + $wareid + ' to ' + $DelivStation.knownname" filter="general" />
+                  </do_if>
+                </do_if>
+                <do_if value="not $DelivStation? or $DelivStation == null">
+                  <debug_text text="'AIC deliver: no ware/station — objective stands, window recycles'" filter="general" />
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Deliver_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$TradeOffer? and $TradeOffer != null" />
+                  </conditions>
+                  <cues>
+                    <cue name="Deliver_Ref" ref="md.RML_Deliver_Wares.DeliverWares">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="Station" value="$DelivStation" />
+                      <param name="Wares" value="$WareBill" />
+                      <param name="Offers" value="$TradeOfferList" />
+                      <param name="PlayerOnly" value="true" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Evacuate_Gate" onfail="cancel">
+              <!-- R10 (verb: evacuate — 'remove personnel from danger'): a REAL passenger (create_cue_actor,
+                   same pattern as offer clients) on the threatened AO station (bindname/damaged first),
+                   delivered to a SAFE station of the issuing faction OUTSIDE the AO.
+                   Engine: RML_Transport_Passengers_V2 (TimeOut=$Window). -->
+              <conditions>
+                <check_value value="$verb == 'evacuate'" />
+              </conditions>
+              <actions>
+                <set_value name="$EvacFrom" exact="null" />
+                <do_if value="$bindname != ''">
+                  <find_station name="$EvCands" space="$PatrolSector" multiple="true" />
+                  <do_for_each name="$ec" in="$EvCands">
+                    <do_if value="$ec.knownname == $bindname">
+                      <set_value name="$EvacFrom" exact="$ec" />
+                      <debug_text text="'AIC evacuate CAUSE-LINKED bind: ' + $bindname" filter="general" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_if value="not $EvacFrom? or $EvacFrom == null">
+                  <find_station name="$EvacFrom" space="$PatrolSector" owner="faction.{$fid}" />
+                </do_if>
+                <do_if value="$EvacFrom? and $EvacFrom != null">
+                  <!-- A5(e): the bridge computed a SAFE sector (owned, uncontested, no live op) — resolve it
+                       by name and dock the evacuees THERE; fallback = nearest own station outside the AO
+                       (the pre-A5e behavior, now the documented deviation) -->
+                  <set_value name="$EvacTo" exact="null" />
+                  <do_if value="$safesector != ''">
+                    <find_sector name="$SafeCands" space="player.galaxy" multiple="true" />
+                    <do_for_each name="$ssec" in="$SafeCands">
+                      <do_if value="$ssec.knownname == $safesector">
+                        <find_station name="$EvacTo" space="$ssec" owner="faction.{$fid}" />
+                        <do_if value="$EvacTo? and $EvacTo != null">
+                          <debug_text text="'AIC evacuate SAFE-SECTOR dest: ' + $safesector" filter="general" />
+                        </do_if>
+                        <break />
+                      </do_if>
+                    </do_for_each>
+                  </do_if>
+                  <do_if value="not $EvacTo? or $EvacTo == null">
+                    <find_station name="$EvacTo" owner="faction.{$fid}" space="player.galaxy"
+                                  sortbydistanceto="$EvacFrom">
+                      <match space="$PatrolSector" negate="true" />
+                    </find_station>
+                  </do_if>
+                  <do_if value="$EvacTo? and $EvacTo != null">
+                    <create_cue_actor cue="this" name="$Evacuee">
+                      <select faction="faction.{$fid}" tags="tag.crew" />
+                      <owner exact="faction.{$fid}" />
+                      <location object="$EvacFrom" />
+                    </create_cue_actor>
+                    <set_objective cue="$MC" step="1" action="objective.pickup" object="$EvacFrom"
+                                   text="$EvacFrom.knownname" showunknownpath="true" />
+                    <debug_text text="'AIC evacuate BOUND from=' + $EvacFrom.knownname + ' to=' + $EvacTo.knownname" filter="general" />
+                  </do_if>
+                </do_if>
+                <do_if value="not $EvacTo? or $EvacTo == null">
+                  <debug_text text="'AIC evacuate: no viable from/to pair — objective stands, window recycles'" filter="general" />
+                </do_if>
+              </actions>
+              <cues>
+                <cue name="Evacuate_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$Evacuee? and $Evacuee != null and $EvacTo? and $EvacTo != null" />
+                  </conditions>
+                  <cues>
+                    <cue name="Evacuate_Ref" ref="md.RML_Transport_Passengers_V2.TransportPassengers_V2">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="Passenger" value="$Evacuee" />
+                      <param name="StartObject" value="$EvacFrom" />
+                      <param name="Destination" value="$EvacTo" />
+                      <param name="TimeOut" value="$Window" />
+                      <param name="SkipConversation" value="true" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Follow_Gate" onfail="cancel">
+              <!-- R2 (verb: follow and support — the #97 doctrine case): accompany a REAL tasked friendly
+                   element. FollowObject is deliberately open-ended (rml_follow_object: the CALLER ends it) —
+                   success = the element survives the window; element lost = failure. -->
+              <conditions>
+                <check_value value="$verb == 'follow_support'" />
+              </conditions>
+              <actions>
+                <find_ship name="$Element" space="$PatrolSector" owner="faction.{$fid}"
+                           primarypurpose="purpose.fight" checkoperational="true" multiple="false" />
+                <do_if value="$Element? and $Element != null and $Element.exists">
+                  <set_objective cue="$MC" step="1" action="objective.follow" object="$Element"
+                                 text="$Element.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC follow BOUND element=' + $Element.knownname" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC follow: no friendly element in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Follow_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$Element? and $Element != null and $Element.exists" />
+                  </conditions>
+                  <cues>
+                    <cue name="Follow_Ref" ref="md.RML_Follow_Object.FollowObject">
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="Target" value="$Element" />
+                      <param name="Range_Min" value="500m" />
+                      <param name="Range_Max" value="10km" />
+                    </cue>
+                    <cue name="Follow_Success">
+                      <delay exact="$Window" />
+                      <actions>
+                        <do_if value="$MC.hasmission and $Element.exists">
+                          <set_value name="MissionEnded.$EndFeedbackValue" exact="1" />
+                          <signal_cue cue="MissionEnded" />
+                        </do_if>
+                      </actions>
+                    </cue>
+                    <cue name="Follow_ElementLost">
+                      <conditions>
+                        <event_object_destroyed object="$Element" />
+                      </conditions>
+                      <actions>
+                        <set_value name="MissionEnded.$EndFeedbackValue" exact="-1" />
+                        <signal_cue cue="MissionEnded" />
+                      </actions>
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Recon_Gate" onfail="cancel">
+              <!-- R9 (verb: recon — 'reconnoitre and report dispositions'): scan a REAL enemy station in the
+                   AO (RML_Scan mode 2: TargetStation); no enemy station → any non-issuing station (dispositions
+                   are dispositions); none at all → AO objective stands. -->
+              <conditions>
+                <check_value value="$verb == 'recon'" />
+              </conditions>
+              <actions>
+                <set_value name="$ScanStation" exact="null" />
+                <do_if value="$tfaction != '' and faction.{$tfaction}?">
+                  <find_station name="$ScanStation" space="$PatrolSector" owner="faction.{$tfaction}" />
+                </do_if>
+                <do_if value="not $ScanStation? or $ScanStation == null">
+                  <find_station name="$ScanStation" space="$PatrolSector" />
+                </do_if>
+                <do_if value="$ScanStation? and $ScanStation != null">
+                  <set_objective cue="$MC" step="1" action="objective.scan" object="$ScanStation"
+                                 text="$ScanStation.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC recon BOUND station=' + $ScanStation.knownname" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC recon: no station in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Recon_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$ScanStation? and $ScanStation != null" />
+                  </conditions>
+                  <cues>
+                    <cue name="Recon_Ref" ref="md.RML_Scan.Scan">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="ScanObjective" value="objective.scan" />
+                      <param name="ObjectiveText" value="$ScanStation.knownname" />
+                      <param name="TargetStation" value="$ScanStation" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Interdict_Gate" onfail="cancel">
+              <!-- R7 (verb: interdict — 'prevent enemy use of the route'): bind REAL enemy TRADE traffic
+                   present in the AO and hand it to the kill engine — logistics, not warships. -->
+              <conditions>
+                <check_value value="$verb == 'interdict'" />
+              </conditions>
+              <actions>
+                <create_group groupname="$TradeTargets" />
+                <do_if value="$tfaction != '' and faction.{$tfaction}?">
+                  <find_ship name="$TradeShips" space="$PatrolSector" owner="faction.{$tfaction}"
+                             primarypurpose="purpose.trade" checkoperational="true" multiple="true" />
+                  <do_for_each name="$ts2" in="$TradeShips">
+                    <do_if value="$TradeTargets.count lt 5 and $ts2.exists">
+                      <add_to_group groupname="$TradeTargets" object="$ts2" />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_if value="$TradeTargets.count gt 0">
+                  <set_objective cue="$MC" step="1" action="objective.kill" group="$TradeTargets"
+                                 text="'Enemy logistics in ' + $PatrolSector.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC interdict BOUND n=' + $TradeTargets.count + ' trade hulls'" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC interdict: no enemy traffic in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Interdict_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$TradeTargets.count gt 0" />
+                  </conditions>
+                  <cues>
+                    <cue name="Interdict_Ref" ref="md.RML_Destroy_Entities.DestroyEntities">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="UpdateBriefing" value="true" />
+                      <param name="Targets_Param" value="$TradeTargets" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Defend_Gate" onfail="cancel">
+              <!-- R5 (verb: defend — 'asset intact through the window'): guard a REAL station of the issuing
+                   faction in the AO with vanilla's protect engine (RML_Protect_Object.ProtectObject —
+                   EndTime=$Window + EndTimeIsSuccess default true = doctrinal success on survival). -->
+              <conditions>
+                <check_value value="$verb == 'defend'" />
+              </conditions>
+              <actions>
+                <!-- cause-linked first (A2 generalized): the ASSESSED damaged station by name -->
+                <set_value name="$GuardStation" exact="null" />
+                <do_if value="$bindname != ''">
+                  <find_station name="$StCands" space="$PatrolSector" multiple="true" />
+                  <do_for_each name="$sc" in="$StCands">
+                    <do_if value="$sc.knownname == $bindname">
+                      <set_value name="$GuardStation" exact="$sc" />
+                      <debug_text text="'AIC defend CAUSE-LINKED bind: ' + $bindname" filter="general" />
+                      <break />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_if value="not $GuardStation? or $GuardStation == null">
+                  <find_station name="$GuardStation" space="$PatrolSector" owner="faction.{$fid}" />
+                </do_if>
+                <do_if value="not $GuardStation? or $GuardStation == null">
+                  <find_station name="$GuardStation" space="$PatrolSector" />
+                </do_if>
+                <do_if value="$GuardStation? and $GuardStation != null">
+                  <set_objective cue="$MC" step="1" action="objective.protect" object="$GuardStation"
+                                 text="$GuardStation.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC defend BOUND station=' + $GuardStation.knownname" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC defend: no station in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Defend_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$GuardStation? and $GuardStation != null" />
+                  </conditions>
+                  <cues>
+                    <cue name="Defend_Ref" ref="md.RML_Protect_Object.ProtectObject">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="Object" value="$GuardStation" />
+                      <param name="EnemyFactions" value="$EnemyFactions" />
+                      <param name="EndTime" value="$Window" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
+            <cue name="Destroy_Gate" onfail="cancel">
+              <!-- R6 (verb: destroy — ATP-112 'render unable to function'): bind REAL hostiles actually present
+                   in the AO (the bindable-cause rule); hand the group to vanilla's kill engine
+                   (RML_Destroy_Entities.DestroyEntities — invocation shape gm_assassinate.xml:669). No live
+                   hostiles found → the AO objective stands and the window recycles the contract. -->
+              <conditions>
+                <check_value value="$verb == 'destroy'" />
+              </conditions>
+              <actions>
+                <create_group groupname="$TargetGroup" />
+                <do_if value="$tfaction != '' and faction.{$tfaction}?">
+                  <find_ship name="$Hostiles" space="$PatrolSector" owner="faction.{$tfaction}"
+                             checkoperational="true" multiple="true" />
+                  <do_for_each name="$h" in="$Hostiles">
+                    <do_if value="$TargetGroup.count lt 5 and $h.exists">
+                      <add_to_group groupname="$TargetGroup" object="$h" />
+                    </do_if>
+                  </do_for_each>
+                </do_if>
+                <do_if value="$TargetGroup.count gt 0">
+                  <set_objective cue="$MC" step="1" action="objective.kill" group="$TargetGroup"
+                                 text="'Hostile group in ' + $PatrolSector.knownname" showunknownpath="true" />
+                  <debug_text text="'AIC destroy BOUND group n=' + $TargetGroup.count + ' in ' + $PatrolSector.knownname" filter="general" />
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC destroy: no live hostiles in AO — objective stands, window recycles'" filter="general" />
+                </do_else>
+              </actions>
+              <cues>
+                <cue name="Destroy_Ref_Gate" onfail="cancel">
+                  <conditions>
+                    <check_value value="$TargetGroup.count gt 0" />
+                  </conditions>
+                  <cues>
+                    <cue name="Destroy_Ref" ref="md.RML_Destroy_Entities.DestroyEntities">
+                      <param name="EndSignalCue" value="MissionEnded" />
+                      <param name="MissionCue" value="$MC" />
+                      <param name="StartStep" value="1" />
+                      <param name="UpdateBriefing" value="true" />
+                      <param name="Targets_Param" value="$TargetGroup" />
+                    </cue>
+                  </cues>
+                </cue>
+              </cues>
+            </cue>
             <cue name="MissionEnded">
               <!-- vanilla-exact end handling (gm_patrol.xml:1017-1073): RML signals here with feedback -->
               <conditions>
@@ -203,6 +729,13 @@
               <actions>
                 <do_if value="MissionEnded.$EndFeedbackValue" max="0">
                   <debug_text text="'AIC contract FAILED (RML feedback) job=' + $job" filter="general" />
+                  <!-- G4a spec: a bound freighter LOST under escort is a REAL war event — feed it back into the
+                       threat pipeline (same raise shape as On_DebugThreat) so operations respond to the loss. -->
+                  <do_if value="$jtype == 'escort' and $TargetShip? and $TargetShip != null and not $TargetShip.exists">
+                    <raise_lua_event name="'AIChat.hostile_event'"
+                                     param="'attacker=' + (if $tfaction != '' then $tfaction else 'xenon') + '|victim=' + $fid + '|sector=' + $PatrolSector.knownname + '|kind=ship_destroyed|magnitude=4|order=|save_id=' + (if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset')" />
+                    <debug_text text="'AIC escort loss -> hostile_event job=' + $job" filter="general" />
+                  </do_if>
                   <remove_mission cue="$MC" type="failed" />
                   <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
                   <remove_value name="Registry.$ByJob.{$key}" />
@@ -225,7 +758,7 @@
             <cue name="MissionTimeout">
               <!-- vanilla shape (gm_patrol.xml:1002): expiry = failed. Delay starts at ACTIVATION (this subtree
                  only enables post-accept). hasmission guard: no-op if already ended. -->
-              <delay exact="4h" />
+              <delay exact="$Window" />
               <actions>
                 <do_if value="$MC.hasmission">
                   <debug_text text="'AIC contract TIMEOUT job=' + $job" filter="general" />

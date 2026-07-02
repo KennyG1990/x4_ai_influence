@@ -376,11 +376,10 @@ local function onOpordOrderEvent(_, param) AI_Influence.OpordOrderEvent(param) e
 -- OPORD issuer (Phase D): poll the bridge for tasks awaiting a real ship order, relay each to the MD issuer
 -- (aic_opord_execution.xml On_Assign) which finds a faction ship + create_orders our protectposition aiscript.
 function AI_Influence.PollOpordOrders(saveId)
-    -- #70 diag: every early-return here was SILENT; log each so a dead poll is visible in debuglog.
+    -- (#70 TEMP info logs stripped 2026-07-02 per D; ERROR logs kept — silent-early-return lesson stands)
     local req = newRequest("POST"); if not req then log("opord poll: djfhe request unavailable") return end
     req:setUrl(BRIDGE_URL .. "/v1/opord/orders/pending")
     req:setBody((json and json.encode) and json.encode({ save_id = saveId or "unindexed" }) or { save_id = saveId })
-    log("opord poll: POST sent save=" .. tostring(saveId))
     req:send(function(resp, err)
         if err then log("opord poll err: " .. tostring(err)) return end
         local content, jerr
@@ -389,7 +388,6 @@ function AI_Influence.PollOpordOrders(saveId)
             log("opord poll: unusable response jerr=" .. tostring(jerr) .. " hasPending=" .. tostring(content and content.pending ~= nil))
             return
         end
-        log("opord poll: pending=" .. tostring(#content.pending))
         for _, t in ipairs(content.pending) do
             if type(t) == "table" and t.task_id then
                 AddUITriggeredEvent("ai_influence", "opord_assign", { operation_id = t.operation_id,
@@ -433,13 +431,24 @@ function AI_Influence.PollContractOffers(saveId)
                     AI_Influence._contracts[o.job_id] = tonumber(o.reward or 0) or true
                     local mtypes = { patrol = "fight", escort = "fight", privateer = "destroy",
                                      bounty = "destroy", supply = "deliver", recon = "find" }
-                    local otypes = { patrol = "custom", escort = "custom", privateer = "destroy",
+                    -- real objective verbs (objective.custom without customaction threw 'null is not a
+                    -- string' in create_offer — the diag correlation Ken's board proved; enums verified in md.xsd)
+                    local otypes = { patrol = "patrol", escort = "escort", privateer = "destroy",
                                      bounty = "destroy", supply = "deliver", recon = "find" }
                     AddUITriggeredEvent("ai_influence", "contract_offer", {
                         -- reward in CREDITS: MD casts via (1Cr * N) = N Cr (proven in-game across 3 builds;
                         -- only a RAW float with no money cast displays /100 — never multiply here)
                         job_id = o.job_id, faction = o.faction, reward = (o.reward or 0),
                         job_type = o.job_type or "contract",
+                        urgency = (o.urgency or 3),
+                        -- A2: the assessed threatened asset the escort exists to protect (bind by name in MD)
+                        bind_name = o.bind_name,
+                        -- A4: the mission task verb — MD gates gameplay by VERB, not job type
+                        task_verb = (o.task_verb or "patrol"),
+                        -- R8: the ware bill for deliver contracts
+                        ware = o.ware,
+                        -- A5(e): bridge-computed SAFE destination sector for evacuations
+                        safe_sector = o.safe_sector,
                         mtype = mtypes[tostring(o.job_type or "")] or "fight",
                         -- vanilla-style sentence case ("Ministry Escort Contract"), not ALL CAPS (Ken 2026-07-01)
                         title = tostring(o.faction_name or o.faction or "Faction") .. " " ..

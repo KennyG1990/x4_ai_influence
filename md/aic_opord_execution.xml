@@ -18,8 +18,10 @@
         <set_value name="$task" exact="if $d.$task_id? then $d.$task_id else 0"/>
         <set_value name="$op" exact="if $d.$operation_id? then $d.$operation_id else ''"/>
         <set_value name="$stance" exact="if $d.$stance? then $d.$stance else 'defensive'"/>
-        <!-- #70 diag: unconditional entry log — the old debug_text sat INSIDE the do_if, so a failed guard was silent -->
-        <debug_text text="'AIC On_Assign ENTER fid=' + $fid + ' task=' + $task + ' known=' + (if $fid != '' and faction.{$fid}? then 'yes' else 'NO')" filter="general"/>
+        <!-- (#70 ENTER diag stripped 2026-07-02 per D — assign path stable; the failed-guard case below logs) -->
+        <do_if value="$fid == '' or not faction.{$fid}?">
+          <debug_text text="'AIC On_Assign REJECTED fid=' + $fid + ' (unknown faction)'" filter="general"/>
+        </do_if>
         <do_if value="$fid != '' and faction.{$fid}?">
           <find_ship_by_true_owner groupname="$cands" faction="faction.{$fid}" space="player.galaxy" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
           <do_for_each name="$s" in="$cands">
