@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="AIC_WarIndustry" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- W2 (#148): REAL build placement — the bridge's build_place drain action activates rebuild JOB slots
+       (libraries/jobs.xml, quota 0 base) via get_suitable_job exceedquota — the DeadAir runtime shape verbatim
+       (deadairdynamicuniverse.xml:4739-4742). The game's job engine then CONSTRUCTS the hull at a real
+       shipyard (buildatshipyard). Result reports back over AIChat.build_placed → bridge marks
+       placed/place_failed. No ship is ever spawned by this file — slots are activated, the game builds. -->
+  <cues>
+    <cue name="Build_place" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'action'" />
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3" />
+        <do_if value="$d.$type? and $d.$type == 'build_place' and $d.$order_id? and $d.$faction? and faction.{$d.$faction}?">
+          <set_value name="$n" exact="if $d.$count? then $d.$count else 1" />
+          <set_value name="$sizetag" exact="'aic_rebuild_' + (if $d.$size? and $d.$size != null and $d.$size != '' then $d.$size else 'm')" />
+          <set_value name="$found" exact="0" />
+          <do_all exact="$n" counter="$i">
+            <set_value name="$Job" exact="[null]" />
+            <get_suitable_job result="$Job" tags="[tag.{$sizetag}]" faction="faction.{$d.$faction}" exceedquota="true" onlycommandeerable="true" multiple="true" append="false" />
+            <do_if value="@$Job.{1}">
+              <set_value name="$found" operation="add" />
+            </do_if>
+          </do_all>
+          <raise_lua_event name="'AIChat.build_placed'" param="'order=' + $d.$order_id + '|found=' + $found" />
+          <debug_text text="'AIC W2 build_place order=' + $d.$order_id + ' faction=' + $d.$faction + ' tag=' + $sizetag + ' requested=' + $n + ' found=' + $found" filter="general" />
+        </do_if>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

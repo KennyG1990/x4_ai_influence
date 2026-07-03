@@ -481,7 +481,21 @@ function AI_Influence.ContractClaimed(param)
     req:setUrl(BRIDGE_URL .. "/v1/jobs/claim")
     local payload = { save_id = AI_Influence._saveId or "unindexed", job_id = job, claimant = "player" }
     req:setBody((json and json.encode) and json.encode(payload) or payload)
-    req:send(function(_, err) if err then log("contract claim err: " .. tostring(err)) end end)
+    req:send(function(resp, err)
+        if err then log("contract claim err: " .. tostring(err)) return end
+        -- #146 REVOCATION HANDSHAKE (the ghost-escort lesson): the bridge is the FUNDING truth. If the claim
+        -- did not lock an OPEN row (cancelled/expired/taken between offer and accept), tell MD to revoke the
+        -- mission gracefully — the player must never fly an unfunded contract.
+        local ok_claim = false
+        if resp and resp.getJson then
+            local content = resp:getJson()
+            ok_claim = (content ~= nil) and (content.ok == true)
+        end
+        if (not ok_claim) and AddUITriggeredEvent then
+            AddUITriggeredEvent("ai_influence", "contract_revoked", { job_id = job })
+            log("contract claim REFUSED by bridge -> revoke job=" .. tostring(job))
+        end
+    end)
 end
 local function onContractClaimed(_, param) AI_Influence.ContractClaimed(param) end
 
@@ -512,6 +526,21 @@ function AI_Influence.ContractCompleted(param)
     req:send(function(_, err) if err then log("contract complete err: " .. tostring(err)) end end)
 end
 local function onContractCompleted(_, param) AI_Influence.ContractCompleted(param) end
+
+-- W2 (#148): MD reports how many rebuild job slots were activated for a build order → bridge marks
+-- placed / place_failed (reserve releases on failure).
+function AI_Influence.BuildPlaced(param)
+    local order = string.match(tostring(param or ""), "order=([^|]*)")
+    local found = tonumber(string.match(tostring(param or ""), "found=([^|]*)") or "0") or 0
+    if not order or order == "" then log("build_placed: no order id in param") return end
+    local req = newRequest("POST"); if not req then log("build_placed: djfhe request unavailable") return end
+    req:setUrl(BRIDGE_URL .. "/v1/build/placed")
+    local payload = { save_id = AI_Influence._saveId or "unindexed", order_id = order, found = found }
+    req:setBody((json and json.encode) and json.encode(payload) or payload)
+    req:send(function(_, err) if err then log("build_placed err: " .. tostring(err)) end end)
+    log("build_placed order=" .. tostring(order) .. " found=" .. tostring(found))
+end
+local function onBuildPlaced(_, param) AI_Influence.BuildPlaced(param) end
 
 -- MD issued a real create_order → record the lease on the bridge, then mark the order issued (chained POSTs).
 function AI_Influence.OpordIssued(param)
@@ -708,6 +737,10 @@ function AI_Influence.SyncInfluence(saveId)
                         -- #27 contract_frago fields: amend the player's LIVE accepted mission (MD Frago_dispatch)
                         if a.job_id then tp.job_id = tostring(a.job_id) end
                         if a.summary then tp.summary = tostring(a.summary) end
+                        -- W2 (#148) build_place fields: activate rebuild job slots (md/aic_warindustry.xml)
+                        if a.order_id then tp.order_id = tostring(a.order_id) end
+                        if a.size then tp.size = tostring(a.size) end
+                        if a.count ~= nil then tp.count = tonumber(a.count) or 1 end
                         pcall(function() AddUITriggeredEvent("ai_influence", "action", tp) end)
                     end
                 end
@@ -1332,6 +1365,7 @@ local function init()
     RegisterEvent("AIChat.contract_claimed", onContractClaimed)
     RegisterEvent("AIChat.contract_aborted", onContractAborted)
     RegisterEvent("AIChat.contract_completed", onContractCompleted)
+    RegisterEvent("AIChat.build_placed", onBuildPlaced)
     log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.suggest, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")
 end
 init()

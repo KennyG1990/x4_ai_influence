@@ -1,0 +1,352 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- W2 (#148): AIC war-industry REBUILD jobs — the DeadAir expedition shape verbatim
+     (deadair_scripts/libraries/jobs.xml:311-331 + the xenon quota-0 pattern). quota galaxy=0: NOTHING spawns
+     uncaused; a build_order activates slots via get_suitable_job exceedquota (md/aic_warindustry.xml).
+     buildatshipyard+preferbuilding: the hull is CONSTRUCTED at a real shipyard by the game's own machinery
+     (war-industry spec hard rule: no timers pretending to be construction). -->
+<diff>
+  <add sel="/jobs">
+    <job id="aic_rebuild_argon_m" name="AIC Rebuild Argon M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="argon" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="argon" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="argon" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="argon" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_argon_l" name="AIC Rebuild Argon L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="argon" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="argon" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="argon" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="argon" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_antigone_m" name="AIC Rebuild Antigone M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="antigone" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="antigone" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="antigone" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="antigone" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_antigone_l" name="AIC Rebuild Antigone L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="antigone" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="antigone" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="antigone" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="antigone" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_teladi_m" name="AIC Rebuild Teladi M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="teladi" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="teladi" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="teladi" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="teladi" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_teladi_l" name="AIC Rebuild Teladi L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="teladi" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="teladi" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="teladi" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="teladi" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_paranid_m" name="AIC Rebuild Paranid M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="paranid" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="paranid" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="paranid" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="paranid" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_paranid_l" name="AIC Rebuild Paranid L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="paranid" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="paranid" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="paranid" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="paranid" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_split_m" name="AIC Rebuild Split M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="split" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="split" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="split" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="split" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_split_l" name="AIC Rebuild Split L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="split" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="split" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="split" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="split" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_freesplit_m" name="AIC Rebuild Freesplit M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="freesplit" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="freesplit" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="freesplit" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="freesplit" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_freesplit_l" name="AIC Rebuild Freesplit L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="freesplit" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="freesplit" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="freesplit" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="freesplit" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_holyorder_m" name="AIC Rebuild Holyorder M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="holyorder" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="holyorder" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="holyorder" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="holyorder" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_holyorder_l" name="AIC Rebuild Holyorder L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="holyorder" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="holyorder" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="holyorder" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="holyorder" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_ministry_m" name="AIC Rebuild Ministry M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="ministry" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="ministry" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="ministry" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="ministry" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_ministry_l" name="AIC Rebuild Ministry L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="ministry" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="ministry" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="ministry" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="ministry" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_alliance_m" name="AIC Rebuild Alliance M">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="alliance" tags="[aic_rebuild_m]" size="ship_m"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="alliance" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="alliance" tags="[military]" size="ship_m"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="alliance" overridenpc="true"/>
+      </ship>
+    </job>
+    <job id="aic_rebuild_alliance_l" name="AIC Rebuild Alliance L">
+      <modifiers commandeerable="true" rebuild="true"/>
+      <orders>
+        <order order="Patrol" default="true">
+          <param name="range" value="class.sector"/>
+        </order>
+      </orders>
+      <category faction="alliance" tags="[aic_rebuild_l]" size="ship_l"/>
+      <quota galaxy="0" maxgalaxy="8"/>
+      <location class="galaxy" macro="xu_ep2_universe_macro" faction="alliance" relation="self" comparison="exact" matchextension="false"/>
+      <environment buildatshipyard="true" preferbuilding="true"/>
+      <ship>
+        <select faction="alliance" tags="[military]" size="ship_l"/>
+        <loadout>
+          <level min="0.5" max="1.0"/>
+        </loadout>
+        <owner exact="alliance" overridenpc="true"/>
+      </ship>
+    </job>
+  </add>
+</diff>

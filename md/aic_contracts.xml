@@ -33,6 +33,21 @@
         <set_value name="$ByJob" exact="table[]" />
       </actions>
     </cue>
+    <cue name="Registry_heal" namespace="this" checkinterval="10s">
+      <!-- #132 (Forge debug-watcher find): /refreshmd re-parses this file and WIPES the static Registry cue's
+           variables WITHOUT firing event_game_loaded — Registry.$ByJob then doesn't exist and every keyed
+           lookup hard-errors ("Property lookup failed"), killing ALL offer creation until the next game load.
+           Self-heal: re-create the table whenever it's missing. A refresh also resets THIS cue, so it re-arms
+           on every reset path. (Same gotcha family as #127 — MD namespace state dies on refresh while
+           everything referencing it persists.) -->
+      <conditions>
+        <check_value value="not Registry.$ByJob?" />
+      </conditions>
+      <actions>
+        <set_value name="Registry.$ByJob" exact="table[]" />
+        <debug_text text="'AIC Registry healed ($ByJob was missing — refreshmd wipe)'" filter="general" />
+      </actions>
+    </cue>
     <cue name="Offer_contract" instantiate="true" namespace="this">
       <conditions>
         <event_ui_triggered screen="'ai_influence'" control="'contract_offer'" />
@@ -50,6 +65,15 @@
              is FIXED (#93, objective verbs); lifecycle lines (offered/ACCEPTED/ACTIVATED/BOUND/ABORTED/
              COMPLETED) are KEPT as the permanent in-game evidence layer) -->
         <set_value name="$key" exact="'$' + $job" />
+        <!-- #137 v2 (watcher): a NULL $Client also errors — event_object_signalled rejects non-component
+             values at registration ("Value 'null' is not of type component"). The ONLY safe shape: every
+             path that does not create a REAL $Client cancels the instance BEFORE its children register
+             (children activate when parent actions complete) — see the no-station and dup-skip cancels. -->
+        <!-- #132: inline heal — the registry table may not exist (refreshmd wipe); create it before ANY keyed
+             lookup so offer creation never hard-errors again. -->
+        <do_if value="not Registry.$ByJob?">
+          <set_value name="Registry.$ByJob" exact="table[]" />
+        </do_if>
         <do_if value="$job != '' and $fid != '' and faction.{$fid}? and not Registry.$ByJob.{$key}?">
           <!-- offer hangs on a real station of the issuing faction; the offer is advertised in the player's
                current sector list (v1 of the 'universal board' surface). -->
@@ -87,8 +111,16 @@
           </do_if>
           <do_else>
             <debug_text text="'AIC contract skipped (no station) job=' + $job + ' fid=' + $fid" filter="general" />
+            <!-- #137: nothing was offered — kill the instance NOW instead of leaving a listener-less zombie
+                 for Orphan_check to sweep (KeepAlive would otherwise pin it forever). -->
+            <cancel_cue cue="this" />
           </do_else>
         </do_if>
+        <do_else>
+          <!-- #137 v2: dup-skip / invalid-event path — no offer, no $Client → the instance must die before
+               its children (Accepted listens on $Client) register, or registration hard-errors. -->
+          <cancel_cue cue="this" />
+        </do_else>
       </actions>
       <cues>
         <cue name="Accepted">
@@ -126,6 +158,10 @@
                re-offers it; cancel_cue ends this contract instance (a re-offer is a fresh instance). -->
           <conditions>
             <event_mission_aborted cue="Offer_contract" />
+            <!-- #146: an ISSUER revocation also removes the mission as 'aborted' — but that is the issuer's
+                 withdrawal, not the player walking away: no reputation penalty, no market re-release
+                 (Revoke_contract already handled the teardown; $revoked suppresses this path). -->
+            <check_value value="not $revoked?" />
           </conditions>
           <actions>
             <!-- type="aborted" = vanilla parity (gm_escort.xml:918) — routes through the engine's abort
@@ -143,7 +179,9 @@
                                 faction="faction.{$fid}" />
             </do_if>
             <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
-            <remove_value name="Registry.$ByJob.{$key}" />
+            <do_if value="Registry.$ByJob?">
+              <remove_value name="Registry.$ByJob.{$key}" />
+            </do_if>
             <debug_text text="'AIC contract ABORTED job=' + $job" filter="general" />
             <cancel_cue cue="parent" />
           </actions>
@@ -272,9 +310,16 @@
                   <!-- leg 1 guidance: the SHIP (X4 renders 'target is in <sector>' then refines in-sector).
                        THE GOAL IS IN THE ORDER (Ken doctrine): the objective states destination, not just
                        target — "escort X to safety", never "escort X in circles". -->
+                  <!-- #147 DESTINATION TELEMETRY (Ken directive: "not just the station but the sector and how
+                       far we are from it"): objective carries station + SECTOR; a live updater below refreshes
+                       the remaining jumps/distance every 60s. gatedistance = DeadAir-proven
+                       (order.da.infestation.protectposition.xml). -->
                   <set_objective cue="$MC" step="1" action="objective.escort" object="$TargetShip"
-                                 text="$TargetShip.knownname + ' to ' + (if $TargetLocation? and $TargetLocation != null then $TargetLocation.knownname else $PatrolSector.knownname)"
+                                 text="$TargetShip.knownname + ' to ' + (if $TargetLocation? and $TargetLocation != null then ($TargetLocation.knownname + ' in ' + $TargetLocation.sector.knownname) else $PatrolSector.knownname)"
                                  showunknownpath="true" />
+                  <do_if value="$TargetLocation? and $TargetLocation != null">
+                    <show_notification text="'Escort ' + $TargetShip.knownname + ': destination ' + $TargetLocation.knownname + ' in ' + $TargetLocation.sector.knownname" />
+                  </do_if>
                   <debug_text text="'AIC escort BOUND ship=' + $TargetShip.knownname + ' from=' + $DepartureLocation.knownname + ' to=' + (if $TargetLocation? and $TargetLocation != null then $TargetLocation.knownname else 'NULL') + ' (station dock = completion)'" filter="general" />
                 </do_if>
                 <do_else>
@@ -282,6 +327,23 @@
                 </do_else>
               </actions>
               <cues>
+                <cue name="Escort_Telemetry" instantiate="true" checkinterval="60s">
+                  <!-- #147: live "how far" — refresh the objective with remaining jumps (cross-sector,
+                       gatedistance = DeadAir-proven) or km (same sector) every minute while the mission runs. -->
+                  <conditions>
+                    <check_value value="$MC? and $MC.hasmission and $TargetShip? and $TargetShip != null and $TargetShip.exists and $TargetLocation? and $TargetLocation != null" />
+                  </conditions>
+                  <actions>
+                    <set_value name="$LocJumps" exact="$TargetShip.sector.gatedistance.{$TargetLocation.sector}" />
+                    <!-- #149: in-sector, X4's native guidance shows live distance on the HUD — a text copy was
+                         redundant AND the length arithmetic nulled (Ken's "(null km out)" screenshot). The
+                         same-sector state is 'final approach'; jumps carry the cross-sector story. -->
+                    <set_value name="$LocRemain" exact="if $LocJumps == 1 then '1 jump out' else (if $LocJumps gt 1 then ($LocJumps + ' jumps out') else 'final approach')" />
+                    <set_objective cue="$MC" step="1" action="objective.escort" object="$TargetShip"
+                                   text="$TargetShip.knownname + ' to ' + $TargetLocation.knownname + ' in ' + $TargetLocation.sector.knownname + ' (' + $LocRemain + ')'"
+                                   showunknownpath="true" />
+                  </actions>
+                </cue>
                 <cue name="Escort_Begin" checkinterval="5s">
                   <conditions>
                     <check_value value="$TargetShip? and $TargetShip != null and $TargetShip.exists
@@ -738,7 +800,9 @@
                   </do_if>
                   <remove_mission cue="$MC" type="failed" />
                   <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
-                  <remove_value name="Registry.$ByJob.{$key}" />
+                  <do_if value="Registry.$ByJob?">
+                    <remove_value name="Registry.$ByJob.{$key}" />
+                  </do_if>
                 </do_if>
                 <do_else>
                   <add_faction_relation faction="faction.player" otherfaction="faction.{$fid}" value="0.04"
@@ -750,7 +814,9 @@
                                     faction="faction.{$fid}" />
                   <remove_mission cue="$MC" type="completed" />
                   <raise_lua_event name="'AIChat.contract_completed'" param="'job=' + $job" />
-                  <remove_value name="Registry.$ByJob.{$key}" />
+                  <do_if value="Registry.$ByJob?">
+                    <remove_value name="Registry.$ByJob.{$key}" />
+                  </do_if>
                   <debug_text text="'AIC contract COMPLETED job=' + $job" filter="general" />
                 </do_else>
               </actions>
@@ -764,7 +830,9 @@
                   <debug_text text="'AIC contract TIMEOUT job=' + $job" filter="general" />
                   <remove_mission cue="$MC" type="failed" />
                   <raise_lua_event name="'AIChat.contract_aborted'" param="'job=' + $job" />
-                  <remove_value name="Registry.$ByJob.{$key}" />
+                  <do_if value="Registry.$ByJob?">
+                    <remove_value name="Registry.$ByJob.{$key}" />
+                  </do_if>
                 </do_if>
               </actions>
             </cue>
@@ -780,6 +848,10 @@
           <delay exact="2s" />
           <actions>
             <do_if value="$accepted? and $key?">
+              <!-- #132: the registry table itself may be missing (refresh/load ordering) — create before write -->
+              <do_if value="not Registry.$ByJob?">
+                <set_value name="Registry.$ByJob" exact="table[]" />
+              </do_if>
               <set_value name="Registry.$ByJob.{$key}" exact="parent" />
             </do_if>
           </actions>
@@ -808,6 +880,23 @@
             </do_if>
           </actions>
         </cue>
+        <cue name="Orphan_check" checkinterval="60s">
+          <!-- G5 residue kill (Ken board 2026-07-02: duplicate + stale offers stacking): /refreshmd wipes
+               Registry.$ByJob while instances persist, /reloadui wipes the Lua tracker — the next poll
+               re-offers every job, minting a duplicate generation the withdraw event can never reach
+               (unregistered). SELF-validate instead of trusting trackers: an unaccepted instance the registry
+               does not point at is an ORPHAN — withdraw + self-cancel. The registry key is left alone (it
+               points at the CURRENT instance, or the poll re-offers within a tick). Accepted missions never
+               touched. -->
+          <conditions>
+            <check_value value="not $accepted? and $key? and (not $OfferCue? or not Registry.$ByJob? or not Registry.$ByJob.{$key}? or Registry.$ByJob.{$key} != $OfferCue)" />
+          </conditions>
+          <actions>
+            <debug_text text="'AIC contract orphan self-withdraw job=' + (if $job? then $job else '?')" filter="general" />
+            <remove_offer cue="parent" />
+            <cancel_cue cue="parent" />
+          </actions>
+        </cue>
       </cues>
     </cue>
     <!-- (Accepted_any removed: md.xsd requires the cue attr on event_offer_accepted — the bare form was
@@ -825,7 +914,7 @@
         <set_value name="$d" exact="event.param3" />
         <do_if value="$d.$type? and $d.$type == 'contract_frago' and $d.$job_id?">
           <set_value name="$key" exact="'$' + $d.$job_id" />
-          <do_if value="Registry.$ByJob.{$key}?">
+          <do_if value="Registry.$ByJob? and Registry.$ByJob.{$key}?">
             <set_value name="$c" exact="Registry.$ByJob.{$key}" />
             <do_if value="$c.$accepted? and $c.hasmission">
               <set_value name="$fname" exact="if $d.$faction? and faction.{$d.$faction}? then faction.{$d.$faction}.knownname else 'High Command'" />
@@ -842,6 +931,46 @@
         </do_if>
       </actions>
     </cue>
+    <!-- #146b TOMBSTONE (2026-07-02): the Remediation_alliance_relation one-shot lived here for ~30 minutes
+         and was REMOVED unfired — live check (Ken's HUD + debuglog grep) showed the [AI TEST] −1.0 residue
+         had ALREADY healed, so the corrector was a fix for a stale problem AND a hazard (it would have
+         evaluated on the next game load and zeroed any relation Ken had EARNED by then). Lessons banked:
+         verify CURRENT state before authoring remediation; root cues with value-only conditions do NOT
+         evaluate on /refreshmd (they arm at game load) — one-shots need event_game_loaded + a save-persistent
+         object-var guard. -->
+    <cue name="Revoke_contract" instantiate="true" namespace="this">
+      <!-- #146 REVOCATION HANDSHAKE (the ghost-escort lesson, Ken live 2026-07-02): the bridge REFUSED the
+           accept's claim (job cancelled/expired/taken between offer and accept) — the ISSUER withdraws the
+           contract. Graceful: 5% retainer, clear logbook, NO reputation penalty ($revoked suppresses the
+           Aborted path's rep hit), no 'failed' stain. The player never flies an unfunded contract again. -->
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'contract_revoked'" />
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3" />
+        <set_value name="$job" exact="if $d.$job_id? then $d.$job_id else ''" />
+        <set_value name="$key" exact="'$' + $job" />
+        <do_if value="$job != '' and Registry.$ByJob? and Registry.$ByJob.{$key}?">
+          <set_value name="$c" exact="Registry.$ByJob.{$key}" />
+          <do_if value="$c.$accepted? and $c.hasmission">
+            <set_value name="$c.$revoked" exact="true" />
+            <reward_player money="($c.$reward / 20)" />
+            <write_to_logbook category="missions" title="'Contract withdrawn: ' + $c.$title"
+                              text="'The issuing faction has withdrawn this contract — the underlying operation has concluded. A 5% retainer has been paid for your readiness.'" />
+            <show_notification text="'Contract withdrawn by issuer — retainer paid'" />
+            <remove_mission cue="$c" type="aborted" />
+            <remove_value name="Registry.$ByJob.{$key}" />
+            <debug_text text="'AIC contract REVOKED (issuer) job=' + $job" filter="general" />
+          </do_if>
+          <do_elseif value="not $c.$accepted?">
+            <remove_offer cue="$c" />
+            <cancel_cue cue="$c" />
+            <remove_value name="Registry.$ByJob.{$key}" />
+            <debug_text text="'AIC contract revoked pre-accept (withdrawn) job=' + $job" filter="general" />
+          </do_elseif>
+        </do_if>
+      </actions>
+    </cue>
     <cue name="Withdraw_contract" instantiate="true" namespace="this">
       <conditions>
         <event_ui_triggered screen="'ai_influence'" control="'contract_withdraw'" />
@@ -852,7 +981,7 @@
         <set_value name="$key" exact="'$' + $job" />
         <!-- NEVER tear down an ACCEPTED contract: Accepted removes the registry key, but guard $accepted too
              (same-tick race) — cancel_cue on an accepted mission's cue kills the player's active mission. -->
-        <do_if value="$job != '' and Registry.$ByJob.{$key}? and not Registry.$ByJob.{$key}.$accepted?">
+        <do_if value="$job != '' and Registry.$ByJob? and Registry.$ByJob.{$key}? and not Registry.$ByJob.{$key}.$accepted?">
           <remove_offer cue="Registry.$ByJob.{$key}" />
           <cancel_cue cue="Registry.$ByJob.{$key}" />
           <remove_value name="Registry.$ByJob.{$key}" />
