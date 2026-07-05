@@ -1192,6 +1192,15 @@ local function handleUpdates(success, updates)
                 if menu.active and menu.display then menu.display() end
                 -- P1 (#113): refresh the choice buttons from the now-extended conversation (the loop).
                 if menu.requestSuggestions then menu.requestSuggestions() end
+                -- C2 v2 regression fix (Ken 2026-07-05): the NATIVE wheel's labels must stay contextual
+                -- too — re-request the batch on EVERY reply so MD State ($l1..$t3) carries conversation-
+                -- aware lines for the next wheel render (was: refreshed only on Speak_menu open).
+                if AI_Influence.RequestSuggestions and menu.currentContext then
+                    pcall(AI_Influence.RequestSuggestions,
+                          "faction_id=" .. tostring(menu.currentContext.faction or "")
+                          .. "|target_name=" .. tostring(menu.currentContext.target or "")
+                          .. "|save_id=" .. tostring(menu.currentContext.save_id or ""))
+                end
             end
         end
 
@@ -1352,6 +1361,11 @@ end
 
 local function init()
     RegisterEvent("AIChat.open", onOpenCommLink)
+    -- C2 v3 (Ken 2026-07-05): wheel option 4 SUMMONS the input box (overlay is output-only otherwise).
+    RegisterEvent("AIChat.starttyping", function()
+        local m = rawget(_G, "X4_Terminal_Menu")
+        if m and m.startTyping then pcall(m.startTyping) end
+    end)
     RegisterEvent("AIChat.poll", onPollTick)
     RegisterEvent("AIChat.index_npcs", onIndexNpcs)
     RegisterEvent("AIChat.suggest", onRequestSuggest)

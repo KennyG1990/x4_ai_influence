@@ -96,6 +96,12 @@ menu.PRESET_CHOICES = {
 }
 
 function menu.currentChoices()
+    -- C2: with a pending influence action, the wheel ITSELF becomes the confirm gate — dedicated
+    -- Confirm/Decline wedges (onInput's yes/no gate is unchanged; these just feed it).
+    if menu._pendingAction then
+        return { { label = "Confirm — do it", line = "yes" },
+                 { label = "Decline the proposal", line = "no" } }
+    end
     if menu.suggestions and #menu.suggestions > 0 then return menu.suggestions end
     return menu.PRESET_CHOICES
 end
@@ -128,68 +134,156 @@ function menu.startTyping()
     if menu.active and menu.display then menu.display() end
 end
 
--- Render the frame + widget rows (UIBuilder standard-template body).
+-- ============================================================================
+-- C2 (#158): FULL-WHEEL PRESENTATION — the conversation lives in a RADIAL, not a box (Ken 2026-07-04,
+-- screenshots on record; ME grammar). Hub = NPC's latest line; wedges = choices at polar positions.
+-- C2a research verdict (grounded): X4 ships NO native radial widget — menu_interactmenu.xpl is a
+-- rectangular list (width 260, zero polar math in 414KB) and helper.xpl has none either — so we draw
+-- our own: ONE small frame per wedge positioned via cos/sin (multi-frame menus are a proven vanilla
+-- pattern — the map menu runs several frames on one layer).
+-- ============================================================================
+local WHEEL = {
+    rx = 340, ry = 195,       -- ellipse radii (pre-scale px @1920x1080)
+    wedgeW = 250, wedgeH = 44,
+    hubW = 520, hubH = 168,
+    leftAngles = { 150, 180, 210 },  -- ME reply side: three conversation choices
+    typeAngle = 30,                  -- right-top: free text (demoted to ONE wedge)
+    byeAngle = 330,                  -- right-bottom: Goodbye ("Have it your way.")
+}
+
+local function wedgePos(cx, cy, angleDeg)
+    local a = math.rad(angleDeg)
+    local x = cx + Helper.scaleX(WHEEL.rx) * math.cos(a) - Helper.scaleX(WHEEL.wedgeW) / 2
+    local y = cy - Helper.scaleY(WHEEL.ry) * math.sin(a) - Helper.scaleY(WHEEL.wedgeH) / 2
+    return x, y
+end
+
+-- ONE FRAME PER LAYER is an ENGINE INVARIANT (helper.lua:4247 menu.frames[layer] = frameid — each
+-- display() EVICTS the previous frame; live-proven: six frames → one surviving wedge). So the wheel
+-- is ONE full-screen frame with POSITIONED TABLES — the vanilla pattern (interactmenu.lua:3745/:3846
+-- addTable{ x=, y=, backgroundID="solid" }).
+local function addWedge(frame, cx, cy, angleDeg, label, active, onClick, bg)
+    local wW = Helper.scaleX(WHEEL.wedgeW)
+    local x, y = wedgePos(cx, cy, angleDeg)
+    menu._tab = (menu._tab or 0) + 1
+    local t = frame:addTable(1, { tabOrder = menu._tab, x = x, y = y, width = wW,
+                                  backgroundID = "solid",
+                                  backgroundColor = bg or Color["frame_background_semitransparent"],
+                                  highlightMode = "off" })
+    local row = t:addRow(true, {})
+    row[1]:createButton({ active = active ~= false }):setText(tostring(label), { halign = "center" })
+    if onClick and active ~= false then row[1].handlers.onClick = onClick end
+end
+
+-- Render the wheel (hub + wedges + optional typing dock). Replaces the boxed layout entirely.
 function menu.display()
     refreshHelper()
     log("display ENTER Helper=" .. tostring(Helper ~= nil) .. " Color=" .. tostring(rawget(_G, "Color") ~= nil))
     if not Helper then log("display ABORT: Helper nil"); return end
+    -- C2 v2 (Ken's mockup 2026-07-05): INVISIBLE OVERLAY. The native conversation wheel below owns the
+    -- CHOICES (ai_influence_conversation.xml keeps it open across turns); this window is ONLY floating
+    -- text + a bare input. Zero borders, zero backgrounds — the send button is the single visible chrome.
     if menu.frame then Helper.clearDataForRefresh(menu, menu.layer) end
+    menu._tab = 0
 
-    local w = Helper.scaleX(640)
-    local h = Helper.scaleY(330)
-    local x = ((Helper.viewWidth or 1920) - w) / 2
-    -- Anchor near the BOTTOM of the screen (not dead-centre) so the NPC stays visible behind it.
-    local y = (Helper.viewHeight or 1080) - h - Helper.scaleY(70)
-    menu.frame = Helper.createFrameHandle(menu, { x = x, y = y, width = w, height = h, layer = menu.layer, standardButtons = { close = true } })
+    local vw = Helper.viewWidth or 1920
+    local vh = Helper.viewHeight or 1080
+    local cx = vw / 2
+    -- Wheel centre sits low so the NPC stays visible above it (same instinct as the old box anchor).
+    local cy = vh - Helper.scaleY(430)
 
-    local frameColor = Color["frame_background_semitransparent"]
-    if menu.npcState == "scared" then frameColor = Color["row_background_warning"]
-    elseif menu.npcState == "aggressive" then frameColor = Color["row_background_error"] end
-    menu.frame:setBackground("solid", { color = frameColor })
+    -- THE one frame (engine invariant: one frame per layer) — full-view, NO background, NO buttons:
+    -- pure floating text above the native wheel (ME framing: words, not forms).
+    menu.frame = Helper.createFrameHandle(menu, { x = 0, y = 0, width = vw, height = vh,
+                                                  layer = menu.layer, standardButtons = {},
+                                                  blurBackground = false })   -- native no-blur look (interactmenu.lua:3629)
+    local frame = menu.frame
 
-    local ftable = menu.frame:addTable(2, { tabOrder = 1, width = w, highlightMode = "off" })
-    ftable:setColWidthPercent(1, 78)
-    ftable:setColWidthPercent(2, 22)
-    local row
-
-    -- header widget
-    row = ftable:addRow(false, { bgColor = Color["row_title_background"] })
-    row[1]:setColSpan(2):createText("Comm-Link: " .. (menu.currentContext.target or "NPC"), Helper.headerRowCenteredProperties)
-
-    -- chat/transcript widget: fixed row count — newest at the BOTTOM, blank rows padded on top — so
-    -- the input box stays anchored low instead of drifting as the conversation fills. (Single-table
-    -- layout: the multi-table vanilla scroll approach needs explicit per-table y-offsets — TODO.)
+    local tw = Helper.scaleX(680)
+    local ty = vh - Helper.scaleY(340)   -- text block DIRECTLY above the native conversation wheel (Ken 2026-07-05)
+    menu._tab = menu._tab + 1
+    local ht = frame:addTable(3, { tabOrder = menu._tab, x = cx - tw / 2, y = ty, width = tw,
+                                   highlightMode = "off" })
+    ht:setColWidthPercent(1, 74)
+    ht:setColWidthPercent(2, 13)
+    ht:setColWidthPercent(3, 13)
+    -- ME palette (Ken 2026-07-05): the TARGET speaks in orange, the player in green.
+    local NPC_ORANGE = { r = 255, g = 153, b = 51, a = 100 }
+    local PLAYER_GREEN = { r = 120, g = 230, b = 130, a = 100 }
+    local npcColor = NPC_ORANGE
+    if menu.npcState == "scared" then npcColor = Color["text_warning"]
+    elseif menu.npcState == "aggressive" then npcColor = Color["text_error"] end
+    -- Name row carries the ONE persistent control: END (full exit). Everything else is pure output
+    -- (Ken 2026-07-05: "the chat window is strictly for visual output").
+    local row = ht:addRow(true, {})
+    row[1]:setColSpan(2):createText(tostring(menu.currentContext.target or "NPC"),
+                                    { color = Color["text_inactive"] })
+    row[3]:createButton({ active = true }):setText("END", { halign = "center" })
+    row[3].handlers.onClick = function() menu.closeMenu() end
+    -- ME framing: normally show only the NPC's latest line. While they're "thinking" (your line is
+    -- newer than their last reply), show YOUR pending line dimmed so the wait reads as intentional.
+    local lastNpc, lastYou
     local hist = menu.history or {}
-    local SLOTS = 7
-    local startIdx = math.max(1, #hist - SLOTS + 1)
-    local shown = {}
-    for i = startIdx, #hist do shown[#shown + 1] = hist[i] end
-    for p = 1, (SLOTS - #shown) do
-        row = ftable:addRow(false, {})   -- transparent padding (no grey bar) to keep the input anchored
-        local placeholder = (#shown == 0 and p == (SLOTS - #shown)) and "Say something to begin the conversation." or " "
-        row[1]:setColSpan(2):createText(placeholder)
+    for i = #hist, 1, -1 do
+        local it = hist[i]
+        if it.role == "user" then
+            if not lastNpc and not lastYou then lastYou = it.text end
+        elseif not lastNpc then
+            lastNpc = it.text
+            break
+        end
     end
-    for _, item in ipairs(shown) do
-        local who = (item.role == "user") and "You" or (menu.currentContext.target or "NPC")
-        row = ftable:addRow(false, { bgColor = Color["row_background_unselectable"] })
-        row[1]:setColSpan(2):createText(who .. ":  " .. tostring(item.text), { wordwrap = true })
+    if lastYou then
+        row = ht:addRow(false, {})
+        row[1]:setColSpan(3):createText("You:  " .. tostring(lastYou), { wordwrap = true, color = PLAYER_GREEN })
+    end
+    -- ME-style two-voice rendering (Ken 2026-07-05): *asterisk* spans are STAGE DIRECTION — italic,
+    -- muted lavender (the Player2-app look); everything else is SPEECH in the target's orange.
+    local ACTION_COLOR = { r = 175, g = 175, b = 215, a = 100 }
+    local reply = tostring(lastNpc or "Say something, Commander — or pick a line below.")
+    local pos = 1
+    local emitted = false
+    while pos <= #reply do
+        local a1, a2, act = string.find(reply, "%*(.-)%*", pos)
+        local speech = string.sub(reply, pos, (a1 or (#reply + 1)) - 1)
+        speech = string.gsub(speech, "^%s+", ""):gsub("%s+$", "")
+        if speech ~= "" then
+            row = ht:addRow(false, {})
+            row[1]:setColSpan(3):createText(speech, { wordwrap = true, color = npcColor })
+            emitted = true
+        end
+        if act then
+            act = string.gsub(act, "^%s+", ""):gsub("%s+$", "")
+            if act ~= "" then
+                row = ht:addRow(false, {})
+                row[1]:setColSpan(3):createText(act, { wordwrap = true, color = ACTION_COLOR,
+                                                       font = "Zekton Italic" })
+                emitted = true
+            end
+            pos = a2 + 1
+        else
+            break
+        end
+    end
+    if not emitted then
+        row = ht:addRow(false, {})
+        row[1]:setColSpan(3):createText(reply, { wordwrap = true, color = npcColor })
     end
 
-    -- P1 (#113): CHOICE BUTTONS — the conversation advances by PICKING a line, never by being forced to
-    -- type. Each row is a suggestion (or instant preset); clicking sends it and the choices refresh.
-    local choices = menu.currentChoices()
-    for ci = 1, 3 do
-        local c = choices[ci]
-        local label = c and (c.label or c.line) or "..."
-        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
-        row[1]:setColSpan(2):createButton({ active = (c ~= nil) }):setText(tostring(label), { halign = "left" })
-        if c then row[1].handlers.onClick = function() menu.pickChoice(ci) end end
-    end
-
+    -- INPUT ON DEMAND, IN PLACE (Ken 2026-07-05): pressing wheel option 4 makes its label give way —
+    -- the input box materializes AT the option-4 slot (right arc, wheel height) via AIChat.starttyping
+    -- → startTyping(). Sending (Enter or SEND) dismisses it back to pure output.
     if menu.typing then
-        -- Opt-in free text (only reached via "Type my own message"); confirming returns to choices.
-        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
-        row[1]:createEditBox({ height = Helper.standardButtonHeight, defaultText = "Type your message...", maxChars = 255, selectTextOnActivation = true })
+        menu._tab = menu._tab + 1
+        local it = frame:addTable(2, { tabOrder = menu._tab, x = cx + Helper.scaleX(30),
+                                       y = vh - Helper.scaleY(220), width = Helper.scaleX(330),
+                                       highlightMode = "off" })
+        it:setColWidthPercent(1, 76)
+        it:setColWidthPercent(2, 24)
+        row = it:addRow(true, {})
+        row[1]:createEditBox({ height = Helper.standardButtonHeight,
+                               defaultText = "Type your message...",
+                               maxChars = 255, selectTextOnActivation = true })
         row[1].handlers.onTextChanged = function(_, text, textchanged) if textchanged and text ~= nil then menu.editboxText = text end end
         row[1].handlers.onEditBoxDeactivated = function(_, text, textchanged, isconfirmed)
             if textchanged and text ~= nil then menu.editboxText = text end
@@ -197,20 +291,10 @@ function menu.display()
         end
         row[2]:createButton({ active = true }):setText("SEND", { halign = "center" })
         row[2].handlers.onClick = function() menu.typing = false; menu.suggestions = {}; menu.onInput(menu.editboxText) end
-    else
-        -- The ONLY path into the text box — picking a choice never forces it.
-        row = ftable:addRow(true, { bgColor = Color["row_background_unselectable"] })
-        row[1]:setColSpan(2):createButton({ active = true }):setText("Type my own message", { halign = "center" })
-        row[1].handlers.onClick = function() menu.startTyping() end
     end
 
-    -- GOODBYE — ends the conversation.
-    row = ftable:addRow(true, { bgColor = Color["row_background"] })
-    row[1]:setColSpan(2):createButton({ active = true }):setText("Goodbye", { halign = "center" })
-    row[1].handlers.onClick = function() menu.closeMenu() end
-
-    menu.frame:display()
-    log("display DONE frame=" .. tostring(menu.frame ~= nil))
+    frame:display()
+    log("display DONE (invisible overlay)")
 end
 
 -- Send a player line to the bridge (companion transport is the global AI_Influence in aic_uix.lua).
