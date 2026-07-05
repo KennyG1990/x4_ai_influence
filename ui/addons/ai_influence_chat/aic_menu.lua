@@ -200,7 +200,9 @@ function menu.display()
     local frame = menu.frame
 
     local tw = Helper.scaleX(680)
-    local ty = vh - Helper.scaleY(340)   -- text block DIRECTLY above the native conversation wheel (Ken 2026-07-05)
+    -- Ken 2026-07-05 (overlap fix): anchor the text block HIGHER — long replies grow DOWNWARD from ty,
+    -- so headroom lives on top and the block ends a safe margin above the wheel options (~vh-260).
+    local ty = vh - Helper.scaleY(460)
     menu._tab = menu._tab + 1
     local ht = frame:addTable(3, { tabOrder = menu._tab, x = cx - tw / 2, y = ty, width = tw,
                                    highlightMode = "off" })
@@ -274,9 +276,12 @@ function menu.display()
     -- the input box materializes AT the option-4 slot (right arc, wheel height) via AIChat.starttyping
     -- → startTyping(). Sending (Enter or SEND) dismisses it back to pure output.
     if menu.typing then
+        -- Ken 2026-07-05: the option-4-slot position rendered UNDER the native conversation UI
+        -- (unclickable). The box now docks centered BELOW the text block, above the wheel — inside
+        -- our own clear region, always clickable.
         menu._tab = menu._tab + 1
-        local it = frame:addTable(2, { tabOrder = menu._tab, x = cx + Helper.scaleX(30),
-                                       y = vh - Helper.scaleY(220), width = Helper.scaleX(330),
+        local it = frame:addTable(2, { tabOrder = menu._tab, x = cx - Helper.scaleX(240),
+                                       y = vh - Helper.scaleY(310), width = Helper.scaleX(480),
                                        highlightMode = "off" })
         it:setColWidthPercent(1, 76)
         it:setColWidthPercent(2, 24)
@@ -356,6 +361,8 @@ end
 function menu.cleanup()
     menu.frame = nil
     menu.active = false
+    menu.typing = false      -- lifecycle nesting (Ken): input NEVER outlives the window
+    menu.editboxText = ""
 end
 
 function menu.closeMenu()

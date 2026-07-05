@@ -41,6 +41,15 @@
              band-limited (validate_relation_move) — never a forced set_faction_relation. -->
       </actions>
     </cue>
+    <cue name="On_conversation_end" instantiate="true" namespace="this">
+      <conditions>
+        <event_conversation_finished/>
+      </conditions>
+      <actions>
+        <!-- Lifecycle nesting (Ken 2026-07-05): conversation gone => overlay gone. -->
+        <raise_lua_event name="'AIChat.close'"/>
+      </actions>
+    </cue>
     <cue name="On_suggestions" instantiate="true" namespace="this">
       <conditions>
         <event_ui_triggered screen="'ai_influence'" control="'suggestions'"/>
@@ -86,12 +95,14 @@
                                                                                                                                                                                                                   <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
                                                                                                                                                                                                                   <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
                                                                                                                                                                                                                 </run_actions>
-        <!-- C2 v3 (Ken): summon the input box IN PLACE of this option — the label disappears while
-             typing (no AIInf_typed re-add here); the overlay renders the box at the option-4 slot. -->
+        <!-- C2 v3.1 (Ken): the box now docks CENTERED (not in the option-4 slot), so the label STAYS
+             on the wheel — always available, incl. right after a typed send. Pressing it again just
+             re-summons the box (harmless). -->
         <raise_lua_event name="'AIChat.starttyping'"/>
         <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
         <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
         <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
+        <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
         <add_player_choice_return text="'Back'"/>
       </actions>
     </cue>

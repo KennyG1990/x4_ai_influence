@@ -1366,6 +1366,12 @@ local function init()
         local m = rawget(_G, "X4_Terminal_Menu")
         if m and m.startTyping then pcall(m.startTyping) end
     end)
+    -- Lifecycle nesting (Ken 2026-07-05): when the CONVERSATION ends, the overlay ends with it —
+    -- no orphaned chat window / input box after walking away or picking Back out.
+    RegisterEvent("AIChat.close", function()
+        local m = rawget(_G, "X4_Terminal_Menu")
+        if m and m.active and m.closeMenu then pcall(m.closeMenu) end
+    end)
     RegisterEvent("AIChat.poll", onPollTick)
     RegisterEvent("AIChat.index_npcs", onIndexNpcs)
     RegisterEvent("AIChat.suggest", onRequestSuggest)
