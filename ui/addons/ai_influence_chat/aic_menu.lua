@@ -342,6 +342,28 @@ function menu.onInput(text)
         pcall(function() C.AddPlayerLogEntry("news", "AI Error", "Bridge client not loaded in the X4 UI runtime.") end)
         return
     end
+    -- P1 serverless lane: the chat turn goes DIRECT to Player2 (card-backed, no bridge). The bridge
+    -- lane below is preserved as the fallback while the migration completes.
+    if bridge.SendDirectChat then
+        local fc = menu.currentContext.full_context or {}
+        bridge.SendDirectChat({
+            target = menu.currentContext.target,
+            faction = menu.currentContext.faction,
+            role = fc.npc_role or fc.role or "officer",
+            standing = fc.standing,   -- P3-a grounded context from MD
+            psector = fc.psector,
+            nearby = fc.nearby,
+            traffic = fc.traffic,     -- #216 live sector ship-traffic count
+            npc_owned = fc.npc_owned, -- #217 owned-captain flag (gates conversational orders)
+            npc_ship = fc.npc_ship,   -- #217 ship name for the order acknowledgement
+        }, text, function(ok, reply)
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = tostring(reply) })
+            if menu.active and menu.display then menu.display() end
+            log(ok and ("direct chat reply len=" .. tostring(#tostring(reply))) or ("direct chat FAILED: " .. tostring(reply)))
+        end)
+        return
+    end
     bridge.SendToBridge({
         request_id = requestId,
         faction_id = menu.currentContext.faction or "argon",

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="ai_influence_backend" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- config-backend-selection (#209): MD owns the authoritative BYO-backend choice in save-state and pushes it
+       into the serverless Lua on every load (AIChat.backend_config). A menu (or the selftest) persists a new
+       choice via AIChat.backend_persist (Lua -> MD, the event_ui_triggered pattern used by Store_card). Default =
+       player2 so nothing regresses. Mirrors the proven Cards (static holder) + On_LoadProbe (per-load push). -->
+  <cues>
+    <!-- static holder: inits defaults once; the $provider/$base/$model/$key vars persist across save/reload -->
+    <cue name="Backend" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not Backend.$provider?">
+          <set_value name="Backend.$provider" exact="'player2'"/>
+          <set_value name="Backend.$base" exact="''"/>
+          <set_value name="Backend.$model" exact="''"/>
+          <set_value name="Backend.$key" exact="''"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- per-load push into Lua (fires every load, like On_LoadProbe) -->
+    <cue name="Backend_push" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <raise_lua_event name="'AIChat.backend_config'" param="'provider=' + md.ai_influence_backend.Backend.$provider + '|base=' + md.ai_influence_backend.Backend.$base + '|model=' + md.ai_influence_backend.Backend.$model + '|key=' + md.ai_influence_backend.Backend.$key"/>
+        <debug_text text="'AIC backend_config pushed provider=' + md.ai_influence_backend.Backend.$provider" filter="general"/>
+      </actions>
+    </cue>
+    <!-- Lua -> MD persist: the menu (or the selftest) sets a new choice; store it into save-state -->
+    <cue name="Backend_persist" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'backend_persist'"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param3? and event.param3.$provider?">
+          <set_value name="md.ai_influence_backend.Backend.$provider" exact="event.param3.$provider"/>
+          <set_value name="md.ai_influence_backend.Backend.$base" exact="if event.param3.$base? then event.param3.$base else ''"/>
+          <set_value name="md.ai_influence_backend.Backend.$model" exact="if event.param3.$model? then event.param3.$model else ''"/>
+          <set_value name="md.ai_influence_backend.Backend.$key" exact="if event.param3.$key? then event.param3.$key else ''"/>
+          <debug_text text="'AIC backend persisted provider=' + md.ai_influence_backend.Backend.$provider" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

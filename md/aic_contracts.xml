@@ -99,11 +99,16 @@
             <set_value name="$verb" exact="if $d.$task_verb? and $d.$task_verb != null then $d.$task_verb else 'patrol'" />
             <set_value name="$wareid" exact="if $d.$ware? and $d.$ware != null then $d.$ware else ''" />
             <set_value name="$safesector" exact="if $d.$safe_sector? and $d.$safe_sector != null then $d.$safe_sector else ''" />
+            <!-- #215: briefing action must be a REAL objective id — objective.{'custom'} evaluates null
+                 ("Evaluated value 'null' is not a string", latent since #204's otype=custom default; the
+                 offer still created so every mint-run logged one error). Preview verbs map to known-valid
+                 objectives; real gameplay objectives are set post-accept per the #93 doctrine. -->
+            <set_value name="$botype" exact="if $verb == 'patrol' then 'patrol' else 'flyto'"/>
             <create_offer cue="this" location="$OfferObject" name="$title" description="$desc"
                           difficulty="level.easy" actor="$Client" faction="faction.{$fid}"
                           type="missiontype.{$mtype}" reward="$reward" duration="2h">
               <briefing>
-                <objective step="1" action="objective.{$otype}" text="$task" />
+                <objective step="1" action="objective.{$botype}" text="$task" />
               </briefing>
             </create_offer>
             <set_value name="Registry.$ByJob.{$key}" exact="this" />
@@ -506,16 +511,19 @@
                     </do_for_each>
                   </do_if>
                   <do_if value="not $EvacTo? or $EvacTo == null">
-                    <find_station name="$EvacTo" owner="faction.{$fid}" space="player.galaxy"
-                                  sortbydistanceto="$EvacFrom">
-                      <match space="$PatrolSector" negate="true" />
-                    </find_station>
+                    <find_station name="$EvacCands" owner="faction.{$fid}" space="player.galaxy" multiple="true"
+                                  sortbydistanceto="$EvacFrom" />
+                    <do_for_each name="$cand" in="$EvacCands">
+                      <do_if value="$cand.sector != $PatrolSector">
+                        <set_value name="$EvacTo" exact="$cand" />
+                        <break />
+                      </do_if>
+                    </do_for_each>
                   </do_if>
                   <do_if value="$EvacTo? and $EvacTo != null">
                     <create_cue_actor cue="this" name="$Evacuee">
                       <select faction="faction.{$fid}" tags="tag.crew" />
                       <owner exact="faction.{$fid}" />
-                      <location object="$EvacFrom" />
                     </create_cue_actor>
                     <set_objective cue="$MC" step="1" action="objective.pickup" object="$EvacFrom"
                                    text="$EvacFrom.knownname" showunknownpath="true" />
@@ -980,12 +988,20 @@
         <set_value name="$job" exact="if $d.$job_id? then $d.$job_id else ''" />
         <set_value name="$key" exact="'$' + $job" />
         <!-- NEVER tear down an ACCEPTED contract: Accepted removes the registry key, but guard $accepted too
-             (same-tick race) — cancel_cue on an accepted mission's cue kills the player's active mission. -->
-        <do_if value="$job != '' and Registry.$ByJob? and Registry.$ByJob.{$key}? and not Registry.$ByJob.{$key}.$accepted?">
-          <remove_offer cue="Registry.$ByJob.{$key}" />
-          <cancel_cue cue="Registry.$ByJob.{$key}" />
-          <remove_value name="Registry.$ByJob.{$key}" />
-          <debug_text text="'AIC contract withdrawn job=' + $job" filter="general" />
+             (same-tick race) — cancel_cue on an accepted mission's cue kills the player's active mission.
+             The stored cue may be DEAD (stale-on-load cleanup ran first): @-silent .exists gates the
+             teardown; a dead ref still clears its registry slot. -->
+        <do_if value="$job != '' and Registry.$ByJob? and Registry.$ByJob.{$key}?">
+          <do_if value="@Registry.$ByJob.{$key}.exists and not @Registry.$ByJob.{$key}.$accepted">
+            <remove_offer cue="Registry.$ByJob.{$key}" />
+            <cancel_cue cue="Registry.$ByJob.{$key}" />
+            <remove_value name="Registry.$ByJob.{$key}" />
+            <debug_text text="'AIC contract withdrawn job=' + $job" filter="general" />
+          </do_if>
+          <do_if value="not @Registry.$ByJob.{$key}.exists">
+            <remove_value name="Registry.$ByJob.{$key}" />
+            <debug_text text="'AIC contract withdrawn (cue already dead) job=' + $job" filter="general" />
+          </do_if>
         </do_if>
       </actions>
     </cue>

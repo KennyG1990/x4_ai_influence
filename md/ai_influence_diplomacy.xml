@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="ai_influence_diplomacy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- #221 LLM DIPLOMATIC EVENTS (Bannerlord-faithful, DLL-mined architecture): ongoing situations between
+       factions where Player2 DECIDES each development (statement + relation delta) and a validator clamps it
+       to a band before the REAL set_faction_relation executes. Cadence: one statement per event per 2
+       game-hours, max ONE LLM call per 5-minute tick, only while events exist (zero calls otherwise). -->
+  <cues>
+    <cue name="DiploEvents" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not DiploEvents.$Events?">
+          <set_value name="DiploEvents.$Events" exact="table[]"/>
+          <set_value name="DiploEvents.$Pairs" exact="[]"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- open/close (signalled by the pulse's war transitions, or the test lane) -->
+    <cue name="Open_event" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$a" exact="event.param.$a"/>
+        <set_value name="$b" exact="event.param.$b"/>
+        <set_value name="$key" exact="'$d_' + $a + '_' + $b"/>
+        <!-- MaxParticipatingKingdoms port: at most 4 concurrent diplomatic events -->
+        <do_if value="not DiploEvents.$Events.{$key}? and DiploEvents.$Pairs.count lt 4">
+          <set_value name="DiploEvents.$Events.{$key}" exact="table[$a = $a, $b = $b, $kind = event.param.$kind, $next = 0, $n = 0, $speaker = $a]"/>
+          <append_to_list name="DiploEvents.$Pairs" exact="$key"/>
+          <debug_text text="'AIC DIPLO event OPENED ' + $a + ' vs ' + $b + ' kind=' + event.param.$kind" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="Close_event" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <set_value name="$key" exact="'$d_' + event.param.$a + '_' + event.param.$b"/>
+        <do_if value="DiploEvents.$Events.{$key}?">
+          <remove_value name="DiploEvents.$Events.{$key}"/>
+          <remove_from_list name="DiploEvents.$Pairs" exact="$key"/>
+          <debug_text text="'AIC DIPLO event CLOSED ' + event.param.$a + ' vs ' + event.param.$b" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- test lane (probe rigs use it; harmless in production) -->
+    <cue name="Open_from_lua" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_open'"/>
+      </conditions>
+      <actions>
+        <signal_cue_instantly cue="Open_event" param="table[$a = event.param3.$a, $b = event.param3.$b, $kind = event.param3.$kind]"/>
+      </actions>
+    </cue>
+    <cue name="Open_test" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_open_test'"/>
+      </conditions>
+      <actions>
+        <signal_cue_instantly cue="Open_event" param="table[$a = event.param3.$a, $b = event.param3.$b, $kind = event.param3.$kind]"/>
+      </actions>
+    </cue>
+    <cue name="Close_test" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_close_test'"/>
+      </conditions>
+      <actions>
+        <signal_cue_instantly cue="Close_event" param="table[$a = event.param3.$a, $b = event.param3.$b]"/>
+      </actions>
+    </cue>
+    <!-- the statement tick: first DUE event gets ONE LLM statement request; interval 2 game-hours/event -->
+    <cue name="Diplo_boot" namespace="this">
+      <actions>
+        <set_value name="$booted" exact="1"/>
+      </actions>
+      <cues>
+        <cue name="Statement_tick" namespace="this">
+          <delay exact="5min"/>
+          <actions>
+            <set_value name="$now" exact="(player.age / 1h)"/>
+            <set_value name="$fired" exact="0"/>
+            <do_all exact="DiploEvents.$Pairs.count" counter="$i">
+              <set_value name="$k" exact="DiploEvents.$Pairs.{$i}"/>
+              <do_if value="$fired == 0 and DiploEvents.$Events.{$k}?">
+                <set_value name="$ev" exact="DiploEvents.$Events.{$k}"/>
+                <do_if value="$now ge $ev.$next and faction.{$ev.$a}? and faction.{$ev.$b}?">
+                  <!-- re-arm BEFORE the async call so a slow reply can't double-fire; apply re-randomizes -->
+                  <set_value name="$ev.$next" exact="$now + 1"/>
+                  <set_value name="$fired" exact="1"/>
+                  <set_value name="$rel" exact="faction.{$ev.$a}.relationto.{faction.{$ev.$b}}"/>
+                  <raise_lua_event name="'AIChat.diplo_statement'" param="'a=' + $ev.$a + '|b=' + $ev.$b + '|kind=' + $ev.$kind + '|n=' + $ev.$n + '|rel=' + $rel + '|speaker=' + $ev.$speaker"/>
+                  <debug_text text="'AIC DIPLO statement requested speaker=' + $ev.$speaker + ' (' + $ev.$a + ' vs ' + $ev.$b + ') rel=' + $rel" filter="general"/>
+                </do_if>
+              </do_if>
+            </do_all>
+            <reset_cue cue="Statement_tick"/>
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+    <!-- the executor: validated LLM decision -> REAL relation change + news + ledger. The debug line
+         printing old->new IS the engine proof that the LLM decided a real gamestate change. -->
+    <cue name="Diplo_apply" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_apply'"/>
+      </conditions>
+      <actions>
+        <set_value name="$d" exact="event.param3"/>
+        <do_if value="$d? and $d.$a? and $d.$b? and faction.{$d.$a}? and faction.{$d.$b}?">
+          <set_value name="$old" exact="faction.{$d.$a}.relationto.{faction.{$d.$b}}"/>
+          <set_value name="$new" exact="[[$old + $d.$delta, 1.0].min, -1.0].max"/>
+          <set_faction_relation faction="faction.{$d.$a}" otherfaction="faction.{$d.$b}" value="$new"/>
+          <set_faction_relation faction="faction.{$d.$b}" otherfaction="faction.{$d.$a}" value="$new"/>
+          <set_value name="$ekey" exact="'$d_' + $d.$a + '_' + $d.$b"/>
+          <do_if value="DiploEvents.$Events.{$ekey}?">
+            <set_value name="DiploEvents.$Events.{$ekey}.$n" operation="add"/>
+            <!-- ContinueDiplomaticNegotiations port: the OTHER faction speaks next, after a random 1-3 beat gap -->
+            <set_value name="$iv" min="1" max="3"/>
+            <set_value name="DiploEvents.$Events.{$ekey}.$next" exact="(player.age / 1h) + $iv"/>
+            <do_if value="DiploEvents.$Events.{$ekey}.$speaker == $d.$a">
+              <set_value name="DiploEvents.$Events.{$ekey}.$speaker" exact="$d.$b"/>
+            </do_if>
+            <do_else>
+              <set_value name="DiploEvents.$Events.{$ekey}.$speaker" exact="$d.$a"/>
+            </do_else>
+          </do_if>
+          <do_if value="$d.$statement? and $d.$statement != ''">
+            <set_value name="$srcname" exact="if $d.$speaker? and faction.{$d.$speaker}? then faction.{$d.$speaker}.knownname else 'Galactic Diplomatic Service'"/>
+            <write_incoming_message source="$srcname" title="'Diplomatic Statement'" text="$d.$statement" highpriority="false"/>
+            <write_to_logbook category="diplomacy" title="'Diplomatic Statement'" text="$d.$statement"/>
+          </do_if>
+          <raise_lua_event name="'AIChat.world_event'" param="'kind=shift|a=' + faction.{$d.$a}.knownname + '|b=' + faction.{$d.$b}.knownname + '|to=' + $d.$action"/>
+          <debug_text text="'AIC DIPLO LLM-DECIDED ' + $d.$a + ' vs ' + $d.$b + ' action=' + $d.$action + ' delta=' + $d.$delta + ' rel ' + $old + ' -> ' + $new" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

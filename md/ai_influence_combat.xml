@@ -63,6 +63,14 @@
               <!-- #67: the destroyed ship is OUR watched ship; read the raid order tag it carried. -->
               <set_value name="$oid" exact="if $victim.$AIINF_order? then $victim.$AIINF_order else ''"/>
               <raise_lua_event name="'AIChat.hostile_event'" param="'attacker=' + $att + '|victim=' + $victim.owner + '|sector=' + $victim.sector + '|kind=ship_destroyed|magnitude=1|order=' + $oid + '|save_id=' + $sid"/>
+              <!-- #211 doc-08 death history: identity-rich loss event for the life-story lane. Only properties
+                   proven readable at death time in this codebase, all guarded (knownname/idcode per
+                   aic_opord_execution; owner/sector per this cue). -->
+              <set_value name="$vname" exact="if $victim.knownname? then $victim.knownname else ''"/>
+              <set_value name="$vid" exact="if $victim.idcode? then $victim.idcode else ''"/>
+              <set_value name="$vsec" exact="if $victim.sector.knownname? then $victim.sector.knownname else 'unknown space'"/>
+              <set_value name="$aname" exact="if $attacker and $attacker.owner and $attacker.owner.knownname? then $attacker.owner.knownname else 'unknown forces'"/>
+              <raise_lua_event name="'AIChat.ship_lost'" param="'name=' + $vname + '|id=' + $vid + '|sector=' + $vsec + '|attacker=' + $aname"/>
             </do_if>
           </actions>
         </cue>

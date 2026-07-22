@@ -46,5 +46,106 @@
         </do_if>
       </actions>
     </cue>
+    <!-- #217 doc-09: a conversational order from an OWNED captain (Lua-gated) -> the PROVEN create_order
+         actuator. Ship = the conversation NPC's ship when valid+player-owned; else (probe path) any player
+         fight ship via the #215-grounded find_ship_by_true_owner. Slice 1: patrol (AICOpordProtect anchor). -->
+    <cue name="On_player_order" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'player_order'"/>
+      </conditions>
+      <actions>
+        <set_value name="$ord" exact="if event.param3? and event.param3.$order? then event.param3.$order else ''"/>
+        <do_if value="$ord == 'patrol' or $ord == 'return' or $ord == 'hold' or $ord == 'attack' or $ord == 'follow'">
+          <set_value name="$pship" exact="null"/>
+          <do_if value="md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.owner? and md.ai_influence_conversation.State.$current_npc.ship.owner == faction.player">
+            <set_value name="$pship" exact="md.ai_influence_conversation.State.$current_npc.ship"/>
+          </do_if>
+          <do_if value="not $pship? or $pship == null">
+            <find_ship_by_true_owner groupname="$pcands" faction="faction.player" space="player.galaxy" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
+            <do_for_each name="$s" in="$pcands">
+              <do_if value="(not $pship? or $pship == null) and $s.exists and $s.sector?">
+                <set_value name="$pship" exact="$s"/>
+              </do_if>
+            </do_for_each>
+          </do_if>
+          <do_if value="$pship? and $pship != null">
+            <!-- #218 verb branches, each on a PROVEN actuator/param shape -->
+            <do_if value="$ord == 'patrol' or $ord == 'hold'">
+              <create_position name="$panchor" space="$pship.sector"/>
+              <create_order object="$pship" id="'AICOpordProtect'">
+                <param name="destination" value="[$pship.sector, $panchor]"/>
+                <param name="opordradius" value="if $ord == 'hold' then 5000 else 30000"/>
+                <param name="aggressive" value="false"/>
+                <param name="leasetag" value="'player_order_' + $ord"/>
+              </create_order>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' ' + (if $ord == 'hold' then 'holding position in ' else 'patrolling ') + $pship.sector.knownname"/>
+              <debug_text text="'AIC player_order ' + $ord + ' -> ' + $pship.idcode + ' (' + $pship.knownname + ') in ' + $pship.sector.knownname" filter="general"/>
+            </do_if>
+            <do_elseif value="$ord == 'return'">
+              <!-- return-to-player = MoveGeneric to the nearest station in the PLAYER's sector (grounded:
+                   destination takes an object; endintargetzone per ai_influence_contract MoveGeneric) -->
+              <find_station name="$RetSta" space="player.sector"/>
+              <do_if value="$RetSta? and $RetSta != null">
+                <create_order object="$pship" id="'MoveGeneric'">
+                  <param name="destination" value="$RetSta"/>
+                  <param name="endintargetzone" value="true"/>
+                </create_order>
+                <show_notification text="'Order acknowledged: ' + $pship.knownname + ' returning to ' + player.sector.knownname"/>
+                <debug_text text="'AIC player_order return -> ' + $pship.idcode + ' dest=' + $RetSta.knownname" filter="general"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'AIC player_order return: NO STATION in player sector'" filter="general"/>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$ord == 'follow'">
+              <!-- #219 (spike-proven 2026-07-22: Escort id + target param valid, GVS-020->BIX-033).
+                   Follow the player's ship when they fly; on foot -> come to the player's area instead. -->
+              <do_if value="player.occupiedship? and player.occupiedship != null">
+                <create_order object="$pship" id="'Escort'">
+                  <param name="target" value="player.occupiedship"/>
+                </create_order>
+                <show_notification text="'Order acknowledged: ' + $pship.knownname + ' forming up on ' + player.occupiedship.knownname"/>
+                <debug_text text="'AIC player_order follow -> ' + $pship.idcode + ' escorting ' + player.occupiedship.idcode" filter="general"/>
+              </do_if>
+              <do_else>
+                <find_station name="$FolSta" space="player.sector"/>
+                <do_if value="$FolSta? and $FolSta != null">
+                  <create_order object="$pship" id="'MoveGeneric'">
+                    <param name="destination" value="$FolSta"/>
+                    <param name="endintargetzone" value="true"/>
+                  </create_order>
+                  <show_notification text="'Order acknowledged: ' + $pship.knownname + ' heading to your position in ' + player.sector.knownname"/>
+                  <debug_text text="'AIC player_order follow (on-foot fallback) -> ' + $pship.idcode + ' dest=' + $FolSta.knownname" filter="general"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC player_order follow: no target'" filter="general"/>
+                </do_else>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$ord == 'attack'">
+              <!-- attack = engage the nearest Xenon ship in the captain's sector (owner filter proven;
+                   xenon are design-permanent hostiles per the pulse guards). None -> guarded no-op. -->
+              <find_ship name="$Foes" space="$pship.sector" owner="faction.xenon" checkoperational="true" multiple="true"/>
+              <do_if value="$Foes? and $Foes.count gt 0">
+                <create_order object="$pship" id="'Attack'">
+                  <param name="primarytarget" value="$Foes.{1}"/>
+                  <param name="pursuetargets" value="true"/>
+                  <param name="allowothertargets" value="true"/>
+                </create_order>
+                <show_notification text="'Order acknowledged: ' + $pship.knownname + ' engaging ' + $Foes.{1}.knownname"/>
+                <debug_text text="'AIC player_order attack -> ' + $pship.idcode + ' target=' + $Foes.{1}.knownname" filter="general"/>
+              </do_if>
+              <do_else>
+                <show_notification text="$pship.knownname + ': no hostile contacts in ' + $pship.sector.knownname"/>
+                <debug_text text="'AIC player_order attack: NO XENON in ' + $pship.sector.knownname" filter="general"/>
+              </do_else>
+            </do_elseif>
+          </do_if>
+          <do_else>
+            <debug_text text="'AIC player_order ' + $ord + ': NO ELIGIBLE SHIP'" filter="general"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
   </cues>
 </mdscript>

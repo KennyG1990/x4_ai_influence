@@ -20,6 +20,12 @@
         <set_value name="md.ai_influence_conversation.State.$npcname" exact="if event.object.knownname? then event.object.knownname else 'Officer'"/>
         <set_value name="md.ai_influence_conversation.State.$skill" exact="if event.object.combinedskill? then event.object.combinedskill else 0"/>
         <set_value name="md.ai_influence_conversation.State.$role" exact="'crew'"/>
+        <!-- D-A FIX (grounded 2026-07-21): standing = the NPC's owner-faction relation to the player, via the
+             PROVEN vanilla accessor <npc>.owner.relationto.{faction.player} (probe: returned 1 for a player-owned
+             station's manager; event.object.owner.owner is NIL, so the naive chain was wrong). Computed HERE
+             where event.object is in scope; Open_chat reads State.$standing. -->
+        <set_value name="$standrel" exact="if event.object.owner? and event.object.owner.relationto.{faction.player}? then event.object.owner.relationto.{faction.player} else 0"/>
+        <set_value name="md.ai_influence_conversation.State.$standing" exact="if $standrel ge 0.5 then 'allied' else if $standrel ge 0.125 then 'friendly' else if $standrel ge -0.125 then 'neutral' else if $standrel ge -0.5 then 'unfriendly' else 'hostile'"/>
         <do_if value="event.object.role? and event.object.role == entityrole.marine">
           <set_value name="md.ai_influence_conversation.State.$role" exact="'marine'"/>
         </do_if>

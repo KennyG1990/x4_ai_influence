@@ -15,12 +15,41 @@
              OPORD pipeline can be proven live in-game without waiting for natural combat. -->
         <signal_cue_instantly cue="md.Hotkey_API.Register_Action" param="table[             $id          = 'ai_influence_debug_threat',             $name        = 'AI Influence: Force OPORD Threat (debug)',             $description = 'Inject one hostile event so an OPORD operation forms — for testing the command pipeline.',             $category    = 'AI Influence',             $onPress     = On_DebugThreat,             $contexts    = ['flying', 'walking']           ]"/>
         <signal_cue_instantly cue="md.Hotkey_API.Register_Key" param="table[$key = 'shift v', $id = 'ai_influence_debug_threat']"/>
+        <!-- P1 serverless slice: fire ONE direct Player2 completion (bridge bypassed) and log the reply. -->
+        <signal_cue_instantly cue="md.Hotkey_API.Register_Action" param="table[             $id          = 'ai_influence_direct_probe',             $name        = 'AI Influence: Direct Player2 Probe (P1)',             $description = 'Call Player2 at :4315 directly from Lua and print the reply to the logbook.',             $category    = 'AI Influence',             $onPress     = On_DirectProbe,             $contexts    = ['flying', 'walking']           ]"/>
+        <signal_cue_instantly cue="md.Hotkey_API.Register_Key" param="table[$key = 'shift b', $id = 'ai_influence_direct_probe']"/>
       </actions>
     </cue>
     <cue name="On_Hotkey" instantiate="true" namespace="this">
       <conditions>
-        <event_cue_signalled cue="md.Setup.Start" />
+        <event_cue_signalled />
       </conditions>
+      <actions>
+        <raise_lua_event name="'AIChat.open'" />
+      </actions>
+    </cue>
+    <cue name="On_LoadProbe" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <!-- NB: a bare delay element inside actions is not a valid action node (logs "Unknown action node"); the
+             probe has always fired immediately on load (Lua is ready by then), so no delay is needed here. -->
+        <raise_lua_event name="'AIChat.direct_probe'" param="''"/>
+        <show_notification text="'[AI P1] Direct Player2 probe fired on load — see logbook.'"/>
+      </actions>
+    </cue>
+    <cue name="On_DirectProbe" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled />
+      </conditions>
+      <actions>
+        <raise_lua_event name="'AIChat.direct_probe'" param="''"/>
+        <show_notification text="'[AI P1] Direct Player2 probe fired — see logbook for the reply.'"/>
+      </actions>
     </cue>
     <cue name="On_DebugThreat" instantiate="true" namespace="this">
       <conditions>

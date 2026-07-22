@@ -83,6 +83,8 @@
               <write_incoming_message source="$sender" title="$title" text="$body" highpriority="false"/>
             </do_else>
             <show_notification text="'Incoming transmission — ' + $title"/>
+            <!-- ADR-010 observability: the write above is otherwise silent (and a key-mismatch skip would be too) -->
+            <debug_text text="'AIC comms delivered title=' + $title + ' sender=' + $sender" filter="general"/>
           </do_if>
         </do_if>
       </actions>
@@ -106,6 +108,195 @@
           </do_if>
         </do_if>
       </actions>
+    </cue>
+      <!-- P6-a GALAXY PULSE (#200, ADR-009 re-home): deterministic war/peace event detection, fully in-MD.
+         Replaces the bridge's world-event generator for the diplomacy category: every 5 minutes, bucket every
+         unordered faction-pair relation (same thresholds as the U1 standing buckets) and compare against the
+         SAVE-PERSISTED snapshot on this namespaced cue. On a bucket TRANSITION, write the logbook (and notify
+         for war). First run seeds silently. Zero LLM calls, zero bridge, all state inside the save. -->
+    <cue name="Galaxy_pulse" namespace="this">
+      <actions>
+        <set_value name="$Snap" exact="table[]"/>
+        <set_value name="$seeded" exact="0"/>
+      </actions>
+      <cues>
+        <cue name="Pulse_tick" namespace="this">
+          <delay exact="5min"/>
+          <actions>
+            <set_value name="$ids" exact="['argon', 'antigone', 'alliance', 'teladi', 'ministry', 'paranid', 'holyorder', 'split', 'freesplit', 'scaleplate', 'xenon', 'khaak', 'player']"/>
+            <set_value name="$events" exact="0"/>
+            <set_value name="$pairs" exact="0"/>
+            <set_value name="$hotpairs" exact="''"/>
+            <do_all exact="$ids.count" counter="$i">
+              <do_all exact="$ids.count" counter="$j">
+                <do_if value="$j gt $i and faction.{$ids.{$i}}? and faction.{$ids.{$j}}?">
+                  <set_value name="$fa" exact="$ids.{$i}"/>
+                  <set_value name="$fb" exact="$ids.{$j}"/>
+                  <set_value name="$rel" exact="faction.{$fa}.relationto.{faction.{$fb}}"/>
+                  <set_value name="$bucket" exact="if $rel lt -0.5 then 'war' else if $rel lt -0.125 then 'hostile' else if $rel lt 0.125 then 'neutral' else if $rel lt 0.5 then 'friendly' else 'allied'"/>
+                  <set_value name="$key" exact="'$' + $fa + '_' + $fb"/>
+                  <set_value name="$pairs" operation="add"/>
+                  <do_if value="$bucket == 'war' or $bucket == 'hostile'">
+                    <set_value name="$hotpairs" exact="$hotpairs + $fa + '~' + $fb + '=' + $bucket + ';'"/>
+                  </do_if>
+                  <do_if value="not Galaxy_pulse.$Snap.{$key}?">
+                    <!-- first sighting of this pair: seed silently (pre-existing wars get a fatigue clock too) -->
+                    <set_value name="Galaxy_pulse.$Snap.{$key}" exact="$bucket"/>
+                    <set_value name="Galaxy_pulse.$seeded" operation="add"/>
+                    <do_if value="$bucket == 'war'">
+                      <set_value name="Galaxy_pulse.$Snap.{'$t_' + $fa + '_' + $fb}" exact="player.age"/>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="Galaxy_pulse.$Snap.{$key} != $bucket">
+                    <set_value name="$was" exact="Galaxy_pulse.$Snap.{$key}"/>
+                    <set_value name="$na" exact="faction.{$fa}.knownname"/>
+                    <set_value name="$nb" exact="faction.{$fb}.knownname"/>
+                    <set_value name="$events" operation="add"/>
+                    <do_if value="$bucket == 'war'">
+                      <write_to_logbook category="alerts" title="'WAR DECLARED'" text="'Relations between ' + $na + ' and ' + $nb + ' have collapsed into open war.'"/>
+                      <show_notification text="'[Galaxy News] WAR: ' + $na + ' vs ' + $nb"/>
+                      <write_to_logbook category="news" title="'Trade Disruption'" text="'Commercial traffic between ' + $na + ' and ' + $nb + ' space is collapsing as the war begins; expect shortages along their shared lanes.'"/>
+                      <set_value name="Galaxy_pulse.$Snap.{'$t_' + $fa + '_' + $fb}" exact="player.age"/>
+                      <!-- #221: a war opens an LLM-driven diplomatic event (statements every ~2 game-hours) -->
+                      <signal_cue_instantly cue="md.ai_influence_diplomacy.Open_event" param="table[$a = $fa, $b = $fb, $kind = 'war']"/>
+                      <!-- #204 serverless contracts: a newly-at-war TRADING faction posts a combat bounty via the
+                           proven Offer_contract lifecycle (through the mod's own Lua shim; no bridge, no LLM). -->
+                      <do_if value="$fa != 'xenon' and $fa != 'khaak' and $fa != 'player' and $fb != 'xenon' and $fb != 'khaak' and $fb != 'player'">
+                        <raise_lua_event name="'AIChat.mint_contract'" param="'job=war_' + $fa + '_' + $fb + '|faction=' + $fa + '|title=War Effort: ' + $na + ' vs ' + $nb + '|summary=With war declared, ' + $na + ' is paying for patrols along its contested frontier with ' + $nb + '.|reward=250000|verb=patrol|target=' + $fb + '|sector=' + (if player.sector.knownname? then player.sector.knownname else '')"/>
+                        <debug_text text="'AIC contract minted (war) ' + $fa + ' vs ' + $fb" filter="general"/>
+                      </do_if>
+                    </do_if>
+                    <do_elseif value="$was == 'war'">
+                      <write_to_logbook category="diplomacy" title="'Peace'" text="'The war between ' + $na + ' and ' + $nb + ' has ended; relations now ' + $bucket + '.'"/>
+                      <signal_cue_instantly cue="md.ai_influence_diplomacy.Close_event" param="table[$a = $fa, $b = $fb]"/>
+                    </do_elseif>
+                    <do_else>
+                      <write_to_logbook category="diplomacy" title="'Diplomatic Shift'" text="'Relations between ' + $na + ' and ' + $nb + ' shifted from ' + $was + ' to ' + $bucket + '.'"/>
+                    </do_else>
+                    <debug_text text="'AIC pulse TRANSITION ' + $fa + '/' + $fb + ' ' + $was + ' -> ' + $bucket" filter="general"/>
+                    <!-- #212 world-events ledger: every diplomacy transition also lands in the in-save ledger
+                         so CONVERSATIONS can reference it (serverless replacement for bridge RoleRAG).
+                         NB: inline if-expressions do NOT support elseif chains — branch via set_value. -->
+                    <set_value name="$wkind" exact="'shift'"/>
+                    <do_if value="$bucket == 'war'"><set_value name="$wkind" exact="'war'"/></do_if>
+                    <do_elseif value="$was == 'war'"><set_value name="$wkind" exact="'peace'"/></do_elseif>
+                    <raise_lua_event name="'AIChat.world_event'" param="'kind=' + $wkind + '|a=' + $na + '|b=' + $nb + '|to=' + $bucket"/>
+                    <set_value name="Galaxy_pulse.$Snap.{$key}" exact="$bucket"/>
+                  </do_elseif>
+                </do_if>
+              </do_all>
+            </do_all>
+            <!-- P7-a WAR FATIGUE (#201): wars older than $WarFatigueHours drift toward ceasefire, one
+                 +0.1 relation step per tick through the PROVEN set_faction_relation actuator. The pulse's own
+                 transition detection then reports the peace naturally. Deterministic, no LLM.
+                 GUARDS: player wars are the player's business; xenon/khaak are design-permanent hostiles. -->
+            <set_value name="$fatigueLimit" exact="if Galaxy_pulse.$WarFatigueHours? then Galaxy_pulse.$WarFatigueHours * 3600s else 3 * 3600s"/>
+            <set_value name="$peaceSteps" exact="0"/>
+            <do_all exact="$ids.count" counter="$i">
+              <do_all exact="$ids.count" counter="$j">
+                <do_if value="$j gt $i and faction.{$ids.{$i}}? and faction.{$ids.{$j}}?">
+                  <set_value name="$fa" exact="$ids.{$i}"/>
+                  <set_value name="$fb" exact="$ids.{$j}"/>
+                  <do_if value="$fa != 'player' and $fb != 'player' and $fa != 'xenon' and $fb != 'xenon' and $fa != 'khaak' and $fb != 'khaak'"><do_if value="Galaxy_pulse.$Snap.{'$' + $fa + '_' + $fb}? and Galaxy_pulse.$Snap.{'$' + $fa + '_' + $fb} == 'war' and Galaxy_pulse.$Snap.{'$t_' + $fa + '_' + $fb}?">
+                    <do_if value="player.age - Galaxy_pulse.$Snap.{'$t_' + $fa + '_' + $fb} gt $fatigueLimit">
+                      <set_value name="$oldrel" exact="faction.{$fa}.relationto.{faction.{$fb}}"/>
+                      <set_value name="$newrel" exact="[$oldrel + 0.1, -0.4].min"/>
+                      <set_faction_relation faction="faction.{$fa}" otherfaction="faction.{$fb}" value="$newrel"/>
+                      <set_faction_relation faction="faction.{$fb}" otherfaction="faction.{$fa}" value="$newrel"/>
+                      <set_value name="$peaceSteps" operation="add"/>
+                      <do_if value="$oldrel lt -0.5 and $newrel ge -0.5">
+                        <write_to_logbook category="diplomacy" title="'Peace Talks'" text="'Exhausted by prolonged war, ' + faction.{$fa}.knownname + ' and ' + faction.{$fb}.knownname + ' have agreed to a ceasefire.'"/>
+                        <!-- P7-b (#203): reparations term — the weaker party (fewer stations = deterministic
+                             loser proxy) owes 3 x 300k Cr, paid one installment per tick via transfer_money
+                             (the vanilla faction-wallet pattern; add_money does not work on factions). -->
+                        <find_station name="$staA" owner="faction.{$fa}" space="player.galaxy" multiple="true"/>
+                        <find_station name="$staB" owner="faction.{$fb}" space="player.galaxy" multiple="true"/>
+                        <set_value name="$cntA" exact="if $staA? then $staA.count else 0"/>
+                        <set_value name="$cntB" exact="if $staB? then $staB.count else 0"/>
+                        <set_value name="$payer" exact="if $cntA le $cntB then $fa else $fb"/>
+                        <set_value name="$payee" exact="if $cntA le $cntB then $fb else $fa"/>
+                        <set_value name="Galaxy_pulse.$Snap.{'$w_' + $fa + '_' + $fb}" exact="table[$payer = $payer, $payee = $payee, $left = 3]"/>
+                        <write_to_logbook category="diplomacy" title="'Reparations'" text="'Under the ceasefire terms, ' + faction.{$payer}.knownname + ' (holding ' + [$cntA, $cntB].min + ' stations to the victor with ' + [$cntA, $cntB].max + ') will pay 900,000 Cr in war reparations to ' + faction.{$payee}.knownname + '.'"/>
+                        <debug_text text="'AIC reparation minted ' + $payer + ' -> ' + $payee + ' (stations ' + $cntA + '/' + $cntB + ')'" filter="general"/>
+                      </do_if>
+                      <do_else>
+                        <write_to_logbook category="diplomacy" title="'Peace Talks'" text="'War-weary ' + faction.{$fa}.knownname + ' and ' + faction.{$fb}.knownname + ' are quietly de-escalating.'"/>
+                      </do_else>
+                      <debug_text text="'AIC fatigue step ' + $fa + '/' + $fb + ' rel ' + $oldrel + ' -> ' + $newrel" filter="general"/>
+                    </do_if>
+                  </do_if></do_if>
+                </do_if>
+              </do_all>
+            </do_all>
+            <debug_text text="'AIC pulse pairs=' + $pairs + ' events=' + $events + ' seeded_total=' + Galaxy_pulse.$seeded + ' peace_steps=' + $peaceSteps" filter="general"/>
+            <!-- P7-b (#203): pay one reparation installment per tick for every open obligation. -->
+            <set_value name="$tribs" exact="''"/>
+            <do_all exact="$ids.count" counter="$i">
+              <do_all exact="$ids.count" counter="$j">
+                <do_if value="$j gt $i and Galaxy_pulse.$Snap.{'$w_' + $ids.{$i} + '_' + $ids.{$j}}?">
+                  <set_value name="$ob" exact="Galaxy_pulse.$Snap.{'$w_' + $ids.{$i} + '_' + $ids.{$j}}"/>
+                  <do_if value="$ob.$left gt 0 and faction.{$ob.$payer}? and faction.{$ob.$payee}?">
+                    <transfer_money from="faction.{$ob.$payer}" to="faction.{$ob.$payee}" amount="300000Cr"/>
+                    <set_value name="$ob.$left" operation="subtract"/>
+                    <set_value name="$tribs" exact="$tribs + $ob.$payer + '>' + $ob.$payee + '=' + $ob.$left + ';'"/>
+                    <write_to_logbook category="diplomacy" title="'Reparation Payment'" text="faction.{$ob.$payer}.knownname + ' has transferred a 300,000 Cr reparation installment to ' + faction.{$ob.$payee}.knownname + ' (' + $ob.$left + ' remaining).'"/>
+                    <debug_text text="'AIC reparation paid ' + $ob.$payer + ' -> ' + $ob.$payee + ' left=' + $ob.$left + ' payer_bal=' + (if faction.{$ob.$payer}.money? then faction.{$ob.$payer}.money else 'n/a') + ' payee_bal=' + (if faction.{$ob.$payee}.money? then faction.{$ob.$payee}.money else 'n/a')" filter="general"/>
+                  </do_if>
+                  <do_if value="$ob.$left le 0">
+                    <remove_value name="Galaxy_pulse.$Snap.{'$w_' + $ids.{$i} + '_' + $ids.{$j}}"/>
+                    <debug_text text="'AIC reparation SETTLED ' + $ob.$payer + ' -> ' + $ob.$payee" filter="general"/>
+                  </do_if>
+                </do_if>
+              </do_all>
+            </do_all>
+            <!-- P6-b (#202): economy events from LIVE station cargo reads in the player's sector.
+                 energycells at ZERO on a known station = a visible power crisis; dedup per station via
+                 Snap '$e_' flags, cleared on recovery so a relapse can report again. -->
+            <set_value name="$econChecked" exact="0"/>
+            <set_value name="$econEvents" exact="0"/>
+            <set_value name="$shortlist" exact="''"/>
+            <do_if value="player.sector.exists">
+              <find_station name="$EconStations" space="player.sector" multiple="true" knownto="faction.player"/>
+              <do_for_each name="$st" in="$EconStations">
+                <do_if value="$econChecked lt 6 and $st.knownname? and $st.isoperational?">
+                  <set_value name="$econChecked" operation="add"/>
+                  <set_value name="$ec" exact="if $st.cargo.{ware.energycells}.count? then $st.cargo.{ware.energycells}.count else -1"/>
+                  <set_value name="$ekey" exact="'$e_' + $st.knownname"/>
+                  <do_if value="$ec == 0 and not Galaxy_pulse.$Snap.{$ekey}?">
+                    <set_value name="Galaxy_pulse.$Snap.{$ekey}" exact="1"/>
+                    <set_value name="$econEvents" operation="add"/>
+                    <set_value name="$shortlist" exact="$shortlist + $st.knownname + ';'"/>
+                    <write_to_logbook category="news" title="'Power Crisis'" text="$st.knownname + ' in ' + player.sector.knownname + ' has exhausted its Energy Cell reserves; production lines are stalling.'"/>
+                    <!-- #212 world-events ledger: economy events are conversation-visible too -->
+                    <raise_lua_event name="'AIChat.world_event'" param="'kind=crisis|a=' + $st.knownname + '|b=' + player.sector.knownname + '|to=power_crisis'"/>
+                    <!-- FACTION-ID RESOLVER (inline): match the station's owner against the known id list to get
+                         a usable id string, then mint a SUPPLY contract from that NPC faction (#204 pattern). -->
+                    <set_value name="$sfid" exact="''"/>
+                    <do_for_each name="$fc" in="$ids">
+                      <do_if value="$sfid == '' and $fc != 'player' and faction.{$fc}? and $st.owner? and $st.owner == faction.{$fc}">
+                        <set_value name="$sfid" exact="$fc"/>
+                      </do_if>
+                    </do_for_each>
+                    <do_if value="$sfid != '' and not Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}?">
+                      <set_value name="Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}" exact="1"/>
+                      <raise_lua_event name="'AIChat.mint_contract'" param="'job=supply_' + $st.knownname + '|faction=' + $sfid + '|title=Energy Cell Supply: ' + $st.knownname + '|summary=' + faction.{$sfid}.knownname + ' urgently needs Energy Cells delivered to ' + $st.knownname + ' in ' + player.sector.knownname + '.|reward=180000|verb=supply|sector=' + player.sector.knownname"/>
+                      <debug_text text="'AIC contract minted (supply) ' + $sfid + ' @ ' + $st.knownname" filter="general"/>
+                    </do_if>
+                  </do_if>
+                  <do_elseif value="$ec gt 0 and Galaxy_pulse.$Snap.{$ekey}?">
+                    <remove_value name="Galaxy_pulse.$Snap.{$ekey}"/>
+                    <do_if value="Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}?"><remove_value name="Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}"/></do_if>
+                    <write_to_logbook category="news" title="'Supply Restored'" text="'Energy Cell deliveries have resumed at ' + $st.knownname + '.'"/>
+                  </do_elseif>
+                </do_if>
+              </do_for_each>
+            </do_if>
+            <debug_text text="'AIC pulse econ_checked=' + $econChecked + ' econ_events=' + $econEvents" filter="general"/>
+            <debug_text text="'AIC-STATE diplo hot=[' + $hotpairs + '] trib=[' + $tribs + '] econ_short=[' + $shortlist + '] player_sector=' + (if player.sector.exists and player.sector.knownname? then player.sector.knownname else '?')" filter="general"/>
+            <reset_cue cue="Pulse_tick"/>
+          </actions>
+        </cue>
+      </cues>
     </cue>
   </cues>
 </mdscript>

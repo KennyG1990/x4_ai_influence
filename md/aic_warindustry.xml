@@ -18,7 +18,7 @@
           <set_value name="$found" exact="0" />
           <do_all exact="$n" counter="$i">
             <set_value name="$Job" exact="[null]" />
-            <get_suitable_job result="$Job" tags="[tag.{$sizetag}]" faction="faction.{$d.$faction}" exceedquota="true" onlycommandeerable="true" multiple="true" append="false" />
+            <get_suitable_job result="$Job" tags="[tag.{$sizetag}]" faction="faction.{$d.$faction}" exceedquota="true" onlycommandeerable="true" multiple="true" />
             <do_if value="@$Job.{1}">
               <set_value name="$found" operation="add" />
             </do_if>
