@@ -1,14 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<content id="x4_ai_influence" name="AI Influence" description="LLM-driven faction representatives you can talk to. Conversations route through the Neural Link bridge to a local LLM; validated actions feed back into the live X4 world." author="Moshine" version="100" date="2026-06-24" save="0" enabled="1">
-  <text language="44" name="AI Influence" description="LLM-driven faction representatives you can talk to. Conversations route through the Neural Link bridge to a local LLM; validated actions feed back into the live X4 world." author="Moshine" />
-  <!-- Neural Link bridge extension: the in-game side that talks to the local bridge/LLM.
-       (historical note: the Neural Link hard-dependency comment removed with ADR-009.) -->
-  <!-- ADR-009 (2026-07-21): single mod — the x4_neural_link extension dependency is REMOVED; its
-       remaining bridge lanes are being re-homed into this mod and are gated by BRIDGE_ENABLED in aic_uix.lua. -->
-  <!-- djfhe HTTP client is required: it carries the chat round-trip to the Neural Link bridge.
-       Without it the HTTP calls silently no-op. -->
-  <dependency id="djfhe_http" optional="true" /><!-- #224: transport is now BUILT-IN (aic_http.lua over bundled MIT LuaSocket); djfhe remains an optional fallback only -->
-  <!-- SirNukes Mod Support APIs provides the Hotkey + Lua-loader APIs the conversation/hotkey
-       cues use; optional so the mod still loads (those features just won't bind) if it's absent. -->
-  <dependency id="ws_2042901274" optional="true" /><!-- SirNukes Mod Support APIs (folder sn_mod_support_apis; the content id is the workshop id). NOTE: its Hotkey API only fires if the external X4 Python Pipe Server is running on the host. -->
+<content id="x4_ai_influence" name="AI Influence" description="Living-galaxy AI: talk to any NPC in real conversations with memory, dice-driven social checks, real payments and real consequences. NPCs remember you, lie, fear, resent, inform and reach out; factions run LLM-driven diplomacy with real relation changes; a dynamic event generator invents galaxy news that feeds conversations, contracts and the economy; outbreaks, security incidents and obituaries round out a living political RPG. Serverless: requires only the free Player2 app (player2.game) running locally - no bridge, no API keys. Toggle features in-chat with 'dnd off' and 'obits off'." author="Moshine" version="200" date="2026-07-22" save="0" enabled="1">
+  <text language="44" name="AI Influence" description="Living-galaxy AI: talk to any NPC in real conversations with memory, dice-driven social checks, real payments and real consequences. NPCs remember you, lie, fear, resent, inform and reach out; factions run LLM-driven diplomacy with real relation changes; a dynamic event generator invents galaxy news that feeds conversations, contracts and the economy; outbreaks, security incidents and obituaries round out a living political RPG. Serverless: requires only the free Player2 app (player2.game) running locally - no bridge, no API keys. Toggle features in-chat with 'dnd off' and 'obits off'." author="Moshine" />
+  <!-- SERVERLESS (ADR-009 + #224): the ONLY runtime requirement is the free Player2 app running
+       locally (http://127.0.0.1:4315). HTTP transport is BUILT-IN (aic_http.lua over bundled MIT
+       LuaSocket/LuaSec - see lua3p/THIRD_PARTY_LICENSES.md). No Python bridge, no API keys. -->
+  <dependency id="djfhe_http" optional="true" /><!-- optional fallback transport only -->
+  <dependency id="ws_2042901274" optional="true" /><!-- SirNukes Mod Support APIs: optional; only the hotkey binding uses it, all core features work without it -->
 </content>

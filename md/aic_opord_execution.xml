@@ -55,7 +55,7 @@
       </conditions>
       <actions>
         <set_value name="$ord" exact="if event.param3? and event.param3.$order? then event.param3.$order else ''"/>
-        <do_if value="$ord == 'patrol' or $ord == 'return' or $ord == 'hold' or $ord == 'attack' or $ord == 'follow'">
+        <do_if value="$ord == 'patrol' or $ord == 'return' or $ord == 'hold' or $ord == 'attack' or $ord == 'follow' or $ord == 'deploy' or $ord == 'explore' or $ord == 'trade' or $ord == 'mine' or $ord == 'dock' or $ord == 'collect'">
           <set_value name="$pship" exact="null"/>
           <do_if value="md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.owner? and md.ai_influence_conversation.State.$current_npc.ship.owner == faction.player">
             <set_value name="$pship" exact="md.ai_influence_conversation.State.$current_npc.ship"/>
@@ -81,6 +81,74 @@
               <show_notification text="'Order acknowledged: ' + $pship.knownname + ' ' + (if $ord == 'hold' then 'holding position in ' else 'patrolling ') + $pship.sector.knownname"/>
               <debug_text text="'AIC player_order ' + $ord + ' -> ' + $pship.idcode + ' (' + $pship.knownname + ') in ' + $pship.sector.knownname" filter="general"/>
             </do_if>
+            <do_elseif value="$ord == 'trade'">
+              <!-- #264: vanilla AutoTrade default behaviour (needs-in-game-verify) -->
+              <create_order object="$pship" id="'AutoTrade'"/>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' commencing automated trading'"/>
+              <debug_text text="'AIC player_order TRADE -> ' + $pship.idcode" filter="general"/>
+            </do_elseif>
+            <do_elseif value="$ord == 'mine'">
+              <!-- #264: vanilla AutoMine default behaviour (needs-in-game-verify) -->
+              <create_order object="$pship" id="'AutoMine'"/>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' commencing automated mining'"/>
+              <debug_text text="'AIC player_order MINE -> ' + $pship.idcode" filter="general"/>
+            </do_elseif>
+            <do_elseif value="$ord == 'dock'">
+              <!-- #264: dock and wait at the nearest station in the captain's sector -->
+              <find_station name="$DkSta" space="$pship.sector"/>
+              <do_if value="$DkSta? and $DkSta != null">
+                <create_order object="$pship" id="'DockAndWait'">
+                  <param name="destination" value="$DkSta"/>
+                </create_order>
+                <show_notification text="'Order acknowledged: ' + $pship.knownname + ' docking at ' + $DkSta.knownname"/>
+                <debug_text text="'AIC player_order DOCK -> ' + $pship.idcode + ' at ' + $DkSta.knownname" filter="general"/>
+              </do_if>
+              <do_else>
+                <debug_text text="'AIC player_order dock: NO STATION in ' + $pship.sector.knownname" filter="general"/>
+              </do_else>
+            </do_elseif>
+            <do_elseif value="$ord == 'collect'">
+              <!-- #264: vanilla drop-collection behaviour (needs-in-game-verify) -->
+              <create_order object="$pship" id="'CollectDropsRegular'"/>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' sweeping for floating cargo'"/>
+              <debug_text text="'AIC player_order COLLECT -> ' + $pship.idcode" filter="general"/>
+            </do_elseif>
+            <do_elseif value="$ord == 'explore'">
+              <!-- #263: vanilla Explore default-behaviour order. NEEDS-IN-GAME-VERIFY: the order id
+                   is vanilla-standard but not corpus-proven; a bad id logs cleanly, no crash. -->
+              <create_order object="$pship" id="'Explore'"/>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' charting an exploration course'"/>
+              <debug_text text="'AIC player_order EXPLORE -> ' + $pship.idcode" filter="general"/>
+            </do_elseif>
+            <do_elseif value="$ord == 'deploy'">
+              <!-- #262 FLEET OPORD slice 1: the commander AND every subordinate each get their own
+                   protect-position order - the battlegroup breaks from follow-formation into an
+                   active sector picket. allsubordinates iteration is the DeadAir Fill pattern. -->
+              <create_position name="$danchor" space="$pship.sector"/>
+              <create_order object="$pship" id="'AICOpordProtect'">
+                <param name="destination" value="[$pship.sector, $danchor]"/>
+                <param name="opordradius" value="40000"/>
+                <param name="aggressive" value="false"/>
+                <param name="leasetag" value="'player_order_deploy'"/>
+              </create_order>
+              <set_value name="$dn" exact="0"/>
+              <do_if value="$pship.allsubordinates? and $pship.allsubordinates.count gt 0">
+                <do_for_each name="$dsub" in="$pship.allsubordinates">
+                  <do_if value="$dsub.exists and $dsub.sector?">
+                    <create_position name="$sanchor" space="$pship.sector"/>
+                    <create_order object="$dsub" id="'AICOpordProtect'">
+                      <param name="destination" value="[$pship.sector, $sanchor]"/>
+                      <param name="opordradius" value="25000"/>
+                      <param name="aggressive" value="false"/>
+                      <param name="leasetag" value="'player_order_deploy_sub'"/>
+                    </create_order>
+                    <set_value name="$dn" operation="add"/>
+                  </do_if>
+                </do_for_each>
+              </do_if>
+              <show_notification text="'Order acknowledged: ' + $pship.knownname + ' deploying battlegroup (' + $dn + ' escorts) across ' + $pship.sector.knownname"/>
+              <debug_text text="'AIC player_order DEPLOY -> ' + $pship.idcode + ' + ' + $dn + ' subordinates in ' + $pship.sector.knownname" filter="general"/>
+            </do_elseif>
             <do_elseif value="$ord == 'return'">
               <!-- return-to-player = MoveGeneric to the nearest station in the PLAYER's sector (grounded:
                    destination takes an object; endintargetzone per ai_influence_contract MoveGeneric) -->
@@ -143,6 +211,112 @@
           </do_if>
           <do_else>
             <debug_text text="'AIC player_order ' + $ord + ': NO ELIGIBLE SHIP'" filter="general"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="On_player_orders" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'player_orders'"/>
+      </conditions>
+      <actions>
+        <!-- #265 (U7): ORDER SETS - each step may name a sector (resolved by matching real station
+             sectors galaxy-wide); steps append to the ship's native order QUEUE (schema-confirmed:
+             create_order "adds it to an object's order queue"), so the ship executes them in
+             sequence. Behavior verbs in a REMOTE sector queue a MoveGeneric there first. -->
+        <set_value name="$n2" exact="if event.param3.$n? then event.param3.$n else 0"/>
+        <do_if value="$n2 gt 0">
+          <set_value name="$pship2" exact="null"/>
+          <do_if value="md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.owner? and md.ai_influence_conversation.State.$current_npc.ship.owner == faction.player">
+            <set_value name="$pship2" exact="md.ai_influence_conversation.State.$current_npc.ship"/>
+          </do_if>
+          <do_if value="$pship2 != null">
+            <find_station name="$AllSta" space="player.galaxy" multiple="true"/>
+            <do_all exact="$n2" counter="$si">
+              <set_value name="$sv" exact="event.param3.{'$v' + $si}"/>
+              <set_value name="$sn" exact="if event.param3.{'$s' + $si}? then event.param3.{'$s' + $si} else ''"/>
+              <set_value name="$tsec" exact="$pship2.sector"/>
+              <set_value name="$remote" exact="false"/>
+              <do_if value="$sn != '' and $AllSta? and $AllSta.count gt 0">
+                <do_for_each name="$stx" in="$AllSta">
+                  <do_if value="not $remote and $stx.sector? and $stx.sector.knownname == $sn">
+                    <set_value name="$tsec" exact="$stx.sector"/>
+                    <set_value name="$remote" exact="$tsec != $pship2.sector"/>
+                  </do_if>
+                </do_for_each>
+              </do_if>
+              <do_if value="$sv == 'patrol' or $sv == 'hold'">
+                <create_position name="$oanchor" space="$tsec"/>
+                <create_order object="$pship2" id="'AICOpordProtect'">
+                  <param name="destination" value="[$tsec, $oanchor]"/>
+                  <param name="opordradius" value="if $sv == 'hold' then 5000 else 30000"/>
+                  <param name="aggressive" value="false"/>
+                  <param name="leasetag" value="'orderset_' + $sv"/>
+                </create_order>
+              </do_if>
+              <do_elseif value="$sv == 'attack'">
+                <find_ship name="$Foes2" space="$tsec" owner="faction.xenon" checkoperational="true" multiple="true"/>
+                <do_if value="$Foes2? and $Foes2.count gt 0">
+                  <create_order object="$pship2" id="'Attack'">
+                    <param name="primarytarget" value="$Foes2.{1}"/>
+                    <param name="pursuetargets" value="true"/>
+                    <param name="allowothertargets" value="true"/>
+                  </create_order>
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$sv == 'dock'">
+                <find_station name="$DkSta2" space="$tsec"/>
+                <do_if value="$DkSta2? and $DkSta2 != null">
+                  <create_order object="$pship2" id="'DockAndWait'">
+                    <param name="destination" value="$DkSta2"/>
+                  </create_order>
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$sv == 'trade' or $sv == 'mine' or $sv == 'explore' or $sv == 'collect'">
+                <do_if value="$remote">
+                  <find_station name="$MvSta" space="$tsec"/>
+                  <do_if value="$MvSta? and $MvSta != null">
+                    <create_order object="$pship2" id="'MoveGeneric'">
+                      <param name="destination" value="$MvSta"/>
+                      <param name="endintargetzone" value="true"/>
+                    </create_order>
+                  </do_if>
+                </do_if>
+                <do_if value="$sv == 'trade'">
+                  <create_order object="$pship2" id="'AutoTrade'"/>
+                </do_if>
+                <do_elseif value="$sv == 'mine'">
+                  <create_order object="$pship2" id="'AutoMine'"/>
+                </do_elseif>
+                <do_elseif value="$sv == 'explore'">
+                  <create_order object="$pship2" id="'Explore'"/>
+                </do_elseif>
+                <do_elseif value="$sv == 'collect'">
+                  <create_order object="$pship2" id="'CollectDropsRegular'"/>
+                </do_elseif>
+              </do_elseif>
+              <do_elseif value="$sv == 'follow'">
+                <do_if value="player.occupiedship? and player.occupiedship != null">
+                  <create_order object="$pship2" id="'Escort'">
+                    <param name="target" value="player.occupiedship"/>
+                  </create_order>
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$sv == 'return'">
+                <find_station name="$RetSta2" space="player.sector"/>
+                <do_if value="$RetSta2? and $RetSta2 != null">
+                  <create_order object="$pship2" id="'MoveGeneric'">
+                    <param name="destination" value="$RetSta2"/>
+                    <param name="endintargetzone" value="true"/>
+                  </create_order>
+                </do_if>
+              </do_elseif>
+              <debug_text text="'AIC ORDERSET step ' + $si + '/' + $n2 + ': ' + $sv + ' in ' + $tsec.knownname + (if $remote then ' (remote)' else '')" filter="general"/>
+            </do_all>
+            <show_notification text="'Order set acknowledged: ' + $pship2.knownname + ' - ' + $n2 + ' sequenced steps'"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'AIC ORDERSET: no eligible ship'" filter="general"/>
           </do_else>
         </do_if>
       </actions>

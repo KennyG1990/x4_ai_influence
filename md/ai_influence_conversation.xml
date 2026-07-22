@@ -32,19 +32,31 @@
         <do_elseif value="event.object.role? and event.object.role == entityrole.service">
           <set_value name="md.ai_influence_conversation.State.$role" exact="'service crew'"/>
         </do_elseif>
-        <!-- Instant PRESET openers so the first wheel never shows a 'thinking' placeholder. The LLM batch
-             (On_suggestions, requested on each Speak_menu open) overwrites these with conversation-aware lines. -->
-        <set_value name="md.ai_influence_conversation.State.$l1" exact="'Ask their situation'"/>
-        <set_value name="md.ai_influence_conversation.State.$l2" exact="'Who are you?'"/>
-        <set_value name="md.ai_influence_conversation.State.$l3" exact="'Any news?'"/>
-        <set_value name="md.ai_influence_conversation.State.$t1" exact="'What is the situation here?'"/>
-        <set_value name="md.ai_influence_conversation.State.$t2" exact="'Who are you, and what is your posting here?'"/>
-        <set_value name="md.ai_influence_conversation.State.$t3" exact="'Have you heard any news lately?'"/>
-        <set_value name="md.ai_influence_conversation.State.$ready" exact="true"/>
+        <!-- #261 (Ken's live catch): CONTROL POSTS override entityrole - the engine says who is
+             actually in the chair. His ship CAPTAIN minted a persona as "logistics officer" because
+             this detection was missing. Schema-grounded: controlpost.aipilot / controlpost.manager
+             (kuertee uses manager in production). -->
+        <do_if value="event.object.controlpost? and event.object.controlpost == controlpost.aipilot">
+          <set_value name="md.ai_influence_conversation.State.$role" exact="'captain'"/>
+        </do_if>
+        <do_elseif value="event.object.controlpost? and event.object.controlpost == controlpost.manager">
+          <set_value name="md.ai_influence_conversation.State.$role" exact="'manager'"/>
+        </do_elseif>
         <add_player_choice_sub section="AIInf_Speak" text="'Speak to AI'"/>
         <!-- [TEST] Declare war on me + ForceWar_handler REMOVED (Ken 2026-07-01): the early
              conversation→gamestate proving slice. Real relation moves are Player2-decided, validated,
              band-limited (validate_relation_move) — never a forced set_faction_relation. -->
+      </actions>
+    </cue>
+    <cue name="On_returned_top" instantiate="true" namespace="this">
+      <conditions>
+        <event_conversation_returned_to_section section="default"/>
+      </conditions>
+      <actions>
+        <!-- #228d: Back to the top level = the player LEFT the speak flow; close the overlay. This
+             deliberately does NOT fire on conversation start - raising close there ran the Lua
+             close path while the NATIVE conversation menu was opening (Ken's stuck wheel). -->
+        <raise_lua_event name="'AIChat.close'"/>
       </actions>
     </cue>
     <cue name="On_conversation_end" instantiate="true" namespace="this">
@@ -56,111 +68,41 @@
         <raise_lua_event name="'AIChat.close'"/>
       </actions>
     </cue>
-    <cue name="On_suggestions" instantiate="true" namespace="this">
-      <conditions>
-        <event_ui_triggered screen="'ai_influence'" control="'suggestions'"/>
-      </conditions>
-      <actions>
-        <set_value name="$d" exact="event.param3"/>
-        <set_value name="md.ai_influence_conversation.State.$l1" exact="if $d.$l1? then $d.$l1 else 'Ask a question'"/>
-        <set_value name="md.ai_influence_conversation.State.$l2" exact="if $d.$l2? then $d.$l2 else 'Make a request'"/>
-        <set_value name="md.ai_influence_conversation.State.$l3" exact="if $d.$l3? then $d.$l3 else 'Share news'"/>
-        <set_value name="md.ai_influence_conversation.State.$t1" exact="if $d.$t1? then $d.$t1 else 'I have a question for you.'"/>
-        <set_value name="md.ai_influence_conversation.State.$t2" exact="if $d.$t2? then $d.$t2 else 'I have a request.'"/>
-        <set_value name="md.ai_influence_conversation.State.$t3" exact="if $d.$t3? then $d.$t3 else 'Have you heard the latest?'"/>
-        <set_value name="md.ai_influence_conversation.State.$ready" exact="$d.$n? and ($d.$n ge 1)"/>
-      </actions>
-    </cue>
     <cue name="Speak_menu" instantiate="true" namespace="this">
       <conditions>
         <check_any>
-                                                                                                                                                                                                                  <event_conversation_next_section section="AIInf_Speak"/>
-                                                                                                                                                                                                                  <event_conversation_returned_to_section section="AIInf_Speak"/>
-                                                                                                                                                                                                                </check_any>
+          <event_conversation_next_section section="AIInf_Speak"/>
+          <event_conversation_returned_to_section section="AIInf_Speak"/>
+        </check_any>
       </conditions>
       <actions>
-        <!-- Always show 3 real choices: presets are seeded at conversation start, then the LLM batch
-             (On_suggestions) overwrites $l1..$t3 with conversation-aware lines — no 'thinking' placeholder. -->
-        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
-        <!-- Refresh suggestions from the CURRENT conversation each time the wheel opens, so subsequent
-             options follow what was just said (the server reads the recent turns). The displayed choices
-             stay (presets / last batch) until the new batch lands via On_suggestions. -->
-        <raise_lua_event name="'AIChat.suggest'" param="'faction_id=' + md.ai_influence_conversation.State.$facname + '|target_name=' + md.ai_influence_conversation.State.$npcname + '|save_id=' + (if md.ai_influence_chat.Save_identity.$save_uuid? then 'game_' + md.ai_influence_chat.Save_identity.$save_uuid else 'game_unset')"/>
+        <!-- #228: the OVERLAY owns the three live conversation choices (fed from each structured
+             reply's topics, so they can never be stale - the native section could only refresh its
+             labels on re-entry, which made the wheel permanently one-behind). The native wheel keeps
+             only STABLE slots, and the overlay opens IMMEDIATELY so presets are clickable at once. -->
+        <run_actions ref="md.ai_influence_chat.Open_chat">
+          <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
+          <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
+        </run_actions>
         <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
         <add_player_choice_return text="'Back'"/>
       </actions>
     </cue>
     <cue name="Pick_typed" instantiate="true" namespace="this">
       <conditions>
-        <event_conversation_next_section section="AIInf_typed"/>
+        <check_any>
+          <event_conversation_next_section section="AIInf_typed"/>
+          <!-- #228c (review): Back from a nested typed section must re-add choices too -->
+          <event_conversation_returned_to_section section="AIInf_typed"/>
+        </check_any>
       </conditions>
       <actions>
         <run_actions ref="md.ai_influence_chat.Open_chat">
-                                                                                                                                                                                                                  <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
-                                                                                                                                                                                                                  <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
-                                                                                                                                                                                                                </run_actions>
-        <!-- C2 v3.1 (Ken): the box now docks CENTERED (not in the option-4 slot), so the label STAYS
-             on the wheel — always available, incl. right after a typed send. Pressing it again just
-             re-summons the box (harmless). -->
+          <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
+          <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
+        </run_actions>
         <raise_lua_event name="'AIChat.starttyping'"/>
-        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
-        <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
-        <add_player_choice_return text="'Back'"/>
-      </actions>
-    </cue>
-    <cue name="Pick_1" instantiate="true" namespace="this">
-      <conditions>
-        <event_conversation_next_section section="AIInf_p1"/>
-      </conditions>
-      <actions>
-        <run_actions ref="md.ai_influence_chat.Open_chat">
-                                                                                                                                                                                                                  <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
-                                                                                                                                                                                                                  <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
-                                                                                                                                                                                                                  <param name="initial" value="md.ai_influence_conversation.State.$t1"/>
-                                                                                                                                                                                                                </run_actions>
-        <!-- C2 v2 (Ken 2026-07-05): the wheel STAYS — re-add the choices so the conversation never
-             exits; the invisible overlay above shows the reply text. Labels refresh per open (suggest). -->
-        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
-        <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
-        <add_player_choice_return text="'Back'"/>
-      </actions>
-    </cue>
-    <cue name="Pick_2" instantiate="true" namespace="this">
-      <conditions>
-        <event_conversation_next_section section="AIInf_p2"/>
-      </conditions>
-      <actions>
-        <run_actions ref="md.ai_influence_chat.Open_chat">
-                                                                                                                                                                                                                  <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
-                                                                                                                                                                                                                  <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
-                                                                                                                                                                                                                  <param name="initial" value="md.ai_influence_conversation.State.$t2"/>
-                                                                                                                                                                                                                </run_actions>
-        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
-        <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
-        <add_player_choice_return text="'Back'"/>
-      </actions>
-    </cue>
-    <cue name="Pick_3" instantiate="true" namespace="this">
-      <conditions>
-        <event_conversation_next_section section="AIInf_p3"/>
-      </conditions>
-      <actions>
-        <run_actions ref="md.ai_influence_chat.Open_chat">
-                                                                                                                                                                                                                  <param name="faction" value="md.ai_influence_conversation.State.$facname"/>
-                                                                                                                                                                                                                  <param name="target" value="md.ai_influence_conversation.State.$npcname"/>
-                                                                                                                                                                                                                  <param name="initial" value="md.ai_influence_conversation.State.$t3"/>
-                                                                                                                                                                                                                </run_actions>
-        <add_player_choice_sub section="AIInf_p1" text="md.ai_influence_conversation.State.$l1"/>
-        <add_player_choice_sub section="AIInf_p2" text="md.ai_influence_conversation.State.$l2"/>
-        <add_player_choice_sub section="AIInf_p3" text="md.ai_influence_conversation.State.$l3"/>
+        <!-- #228: no label choices here - the overlay owns them; the wheel keeps its stable slots. -->
         <add_player_choice_sub section="AIInf_typed" text="'Type my own message'"/>
         <add_player_choice_return text="'Back'"/>
       </actions>

@@ -50,5 +50,48 @@
         </do_if>
       </actions>
     </cue>
+    <!-- #243: persisted feature toggles (dice checks, ship life-stories) - same trio pattern -->
+    <cue name="Toggles" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not Toggles.$dnd?">
+          <set_value name="Toggles.$dnd" exact="1"/>
+          <set_value name="Toggles.$obits" exact="1"/>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="Toggles_push" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <raise_lua_event name="'AIChat.toggles_config'" param="'dnd=' + md.ai_influence_backend.Toggles.$dnd + '|obits=' + md.ai_influence_backend.Toggles.$obits"/>
+        <debug_text text="'AIC toggles pushed dnd=' + md.ai_influence_backend.Toggles.$dnd + ' obits=' + md.ai_influence_backend.Toggles.$obits" filter="general"/>
+      </actions>
+    </cue>
+    <cue name="Toggles_persist" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'toggles_persist'"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param3?">
+          <do_if value="event.param3.$dnd?">
+            <set_value name="md.ai_influence_backend.Toggles.$dnd" exact="event.param3.$dnd"/>
+          </do_if>
+          <do_if value="event.param3.$obits?">
+            <set_value name="md.ai_influence_backend.Toggles.$obits" exact="event.param3.$obits"/>
+          </do_if>
+          <debug_text text="'AIC toggles persisted dnd=' + md.ai_influence_backend.Toggles.$dnd + ' obits=' + md.ai_influence_backend.Toggles.$obits" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
   </cues>
 </mdscript>

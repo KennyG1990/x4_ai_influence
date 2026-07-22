@@ -340,7 +340,8 @@ local BOND_GATE = {
 }
 -- #217 doc-09: conversational fleet orders. Lua is the gate — an order is executed ONLY for a
 -- player-OWNED ship captain (MD grounds npc_owned) and ONLY from the whitelist. The LLM proposes; we verify.
-local PLAYER_ORDERS = { patrol = true, ["return"] = true, hold = true, attack = true, follow = true }
+local PLAYER_ORDERS = { patrol = true, ["return"] = true, hold = true, attack = true, follow = true,
+    deploy = true, explore = true, trade = true, mine = true, dock = true, collect = true }   -- #262/#263/#264
 function AI_Influence.OrderAllowed(ctx, order)
     if type(ctx) ~= "table" then return false end
     if tostring(ctx.npc_owned or "") ~= "1" then return false end
@@ -575,7 +576,8 @@ function AI_Influence.UpsertInitiativeEntry(idx, token, ctx, card)
         end
     end
     idx[#idx + 1] = { tk = tostring(token), tg = tostring(ctx.target or ""), fid = tostring(ctx.faction or ""),
-                      b = tonumber(card.bond) or 0, bd = tonumber(card.bond_day) or 0, id = 0 }
+                      b = tonumber(card.bond) or 0, bd = tonumber(card.bond_day) or 0, id = 0,
+                      inf = (card.informant and 1 or 0) }   -- #242: poached informants check in on their own
     return idx
 end
 -- Highest-bond entry that is bonded (>= INIT_BOND_MIN), neglected (>= INIT_NEGLECT_MIN since last chat)
@@ -588,7 +590,8 @@ function AI_Influence.PickInitiativeCandidate(idx, today)
         local b = tonumber(e.b) or 0
         local neglected = today - (tonumber(e.bd) or 0)
         local sinceOut = today - (tonumber(e.id) or 0)
-        if b >= INIT_BOND_MIN and neglected >= INIT_NEGLECT_MIN and sinceOut >= INIT_COOLDOWN then
+        local isInf = (tonumber(e.inf) or 0) == 1   -- #242: informants report in on a short leash
+        if ((b >= INIT_BOND_MIN and neglected >= INIT_NEGLECT_MIN) or (isInf and neglected >= 1)) and sinceOut >= INIT_COOLDOWN then
             if not best or b > (tonumber(best.b) or 0) then best = e end
         end
     end
@@ -611,7 +614,7 @@ function AI_Influence.InitiativePass(todayOverride)
         AI_Influence.LoadCard(INIT_INDEX_TOKEN, function(card)
             local stored = (type(card) == "table" and type(card.idx) == "table") and card.idx or {}
             local mem = AI_Influence._initIndex or {}
-            for _, e in ipairs(mem) do stored = AI_Influence.UpsertInitiativeEntry(stored, e.tk, { target = e.tg, faction = e.fid }, { bond = e.b, bond_day = e.bd }) end
+            for _, e in ipairs(mem) do stored = AI_Influence.UpsertInitiativeEntry(stored, e.tk, { target = e.tg, faction = e.fid }, { bond = e.b, bond_day = e.bd, informant = (tonumber(e.inf) or 0) == 1 }) end
             AI_Influence._initIndex = stored
             log("initiative index hydrated entries=" .. tostring(#stored))
         end)
@@ -625,13 +628,35 @@ function AI_Influence.InitiativePass(todayOverride)
         return
     end
     log("initiative candidate=" .. tostring(cand.tk) .. " bond=" .. tostring(cand.b))
+    -- #228c (review): never run outreach on the NPC the player is talking to RIGHT NOW - the two
+    -- lanes would LoadCard/StoreCard the same card concurrently (last writer wins, one exchange
+    -- lost). Narrows the race window to the LoadCard round-trip; residual risk documented.
+    local tmI = rawget(_G, "X4_Terminal_Menu")
+    if tmI and tmI.active and tmI.currentContext and tostring(tmI.currentContext.target) == tostring(cand.tg) then
+        log("initiative pass: candidate " .. tostring(cand.tg) .. " is in an active conversation - skipped")
+        return
+    end
     AI_Influence.LoadCard(cand.tk, function(card)
         card = (type(card) == "table") and card or newCard()
         local gap = today - (tonumber(cand.bd) or 0)
-        local sys = "You are " .. tostring(cand.tg or "a station officer") .. " of the " .. tostring(cand.fid or "argon")
-            .. " faction in the X4 galaxy. You have a close personal bond with the player, but you have not spoken in "
-            .. tostring(gap) .. " days and you miss the contact. Your people are " .. AI_Influence.CultureDescriptor(cand.fid)
-            .. ". Write ONE short in-character message (1-2 sentences) reaching out to the player. Respond with ONLY the message text."
+        local sys
+        if card.informant then
+            -- #242: INFORMANT DROP - the poached contact leaks something REAL about their employer,
+            -- grounded on the ledger through THEIR faction's eligibility view. Never invented.
+            local known = AI_Influence.WorldEventLines(AI_Influence._worldEvents or {}, 3, { faction = cand.fid, role = "" })
+            sys = "You are " .. tostring(cand.tg or "a contact") .. ", SECRETLY feeding the player information"
+                .. " about your employer, the " .. tostring(cand.fid or "argon") .. " faction. You have not reported in for "
+                .. tostring(gap) .. " days."
+            if #known > 0 then sys = sys .. " Things you actually know: " .. table.concat(known, "; ") .. "." end
+            sys = sys .. " Write ONE short covert message (1-2 sentences) passing the player something useful"
+                .. " STRICTLY from what you actually know above - if you know nothing, say the channels are quiet."
+                .. " Respond with ONLY the message text."
+        else
+            sys = "You are " .. tostring(cand.tg or "a station officer") .. " of the " .. tostring(cand.fid or "argon")
+                .. " faction in the X4 galaxy. You have a close personal bond with the player, but you have not spoken in "
+                .. tostring(gap) .. " days and you miss the contact. Your people are " .. AI_Influence.CultureDescriptor(cand.fid)
+                .. ". Write ONE short in-character message (1-2 sentences) reaching out to the player. Respond with ONLY the message text."
+        end
         AI_Influence.SendDirect({ { role = "system", content = sys } }, { max_tokens = 100 }, function(ok, reply)
             if not ok or not reply or reply == "" then log("initiative send failed") return end
             cand.id = today
@@ -660,16 +685,32 @@ end
 local OBIT_COOLDOWN_S = 300
 AI_Influence._lastObitAt = AI_Influence._lastObitAt or -OBIT_COOLDOWN_S
 -- Gate check extracted for unit testing: returns true when an obituary should be written.
-function AI_Influence.ObituaryEligible(name, nowS, lastAt)
+function AI_Influence.ObituaryEligible(name, nowS, lastAt, known)
     if not name or name == "" then return false end
+    -- doc-08 (#239): the INTERACTION gate - life stories only for crews the player actually KNOWS
+    -- (known == false means the initiative index is hydrated and holds nobody from this ship).
+    if known == false then return false end
     return (tonumber(nowS) or 0) - (tonumber(lastAt) or 0) >= OBIT_COOLDOWN_S
 end
+-- doc-08: did the player ever TALK to someone on this ship? (index tokens are "Name|Ship|role#seat")
+function AI_Influence.ShipKnownCrew(shipname)
+    local ix = AI_Influence._initIndex
+    if type(ix) ~= "table" then return nil end   -- not hydrated: unknown, do not block
+    if not shipname or shipname == "" then return false end
+    for _, e in ipairs(ix) do
+        if type(e.tk) == "string" and string.find(e.tk, "|" .. shipname .. "|", 1, true) then return true end
+    end
+    return false
+end
+AI_Influence.OBITS_ENABLED = true   -- doc-08 opt-out: "obits off"/"obits on" in the chat box
 function AI_Influence.OnShipLost(param)
     local g = AI_Influence.parseBackendConfig(param)  -- same k=v| wire format
     local nowS = 0
     pcall(function() if GetCurrentGameTime then nowS = GetCurrentGameTime() end end)
-    if not AI_Influence.ObituaryEligible(g.name, nowS, AI_Influence._lastObitAt) then
-        log("obituary skipped name='" .. tostring(g.name) .. "' (unnamed or cooldown)")
+    if not AI_Influence.OBITS_ENABLED then log("obituary skipped (opt-out)") return end
+    local known = AI_Influence.ShipKnownCrew(g.name)
+    if not AI_Influence.ObituaryEligible(g.name, nowS, AI_Influence._lastObitAt, known) then
+        log("obituary skipped name='" .. tostring(g.name) .. "' (unnamed, cooldown, or no known crew)")
         return
     end
     AI_Influence._lastObitAt = nowS
@@ -699,10 +740,16 @@ end
 local WORLDEV_TOKEN = "aic_world_events"
 local WORLDEV_CAP = 30
 AI_Influence._worldEvents = AI_Influence._worldEvents or nil   -- hydrated from the ledger card on load
-function AI_Influence.AddWorldEvent(evts, kind, a, b, to, day)
+function AI_Influence.AddWorldEvent(evts, kind, a, b, to, day, extra)
     evts = (type(evts) == "table") and evts or {}
-    evts[#evts + 1] = { k = tostring(kind or "shift"), a = tostring(a or ""), b = tostring(b or ""),
-                        to = tostring(to or ""), d = tonumber(day) or 0 }
+    local e = { k = tostring(kind or "shift"), a = tostring(a or ""), b = tostring(b or ""),
+                to = tostring(to or ""), d = tonumber(day) or 0 }
+    -- U2 (#240): generated events carry importance + applicable-role for spread eligibility
+    if type(extra) == "table" then
+        if extra.i ~= nil then e.i = tonumber(extra.i) end
+        if extra.ap ~= nil then e.ap = tostring(extra.ap) end
+    end
+    evts[#evts + 1] = e
     while #evts > WORLDEV_CAP do table.remove(evts, 1) end
     return evts
 end
@@ -722,6 +769,18 @@ function AI_Influence.WorldEventLines(evts, k, viewer)
             end
         elseif e.k == "war" then out[#out + 1] = "war has broken out between " .. e.a .. " and " .. e.b
         elseif e.k == "peace" then out[#out + 1] = "the war between " .. e.a .. " and " .. e.b .. " has ended"
+        elseif e.k == "contagion" or e.k == "security" or e.k == "combat" then
+            -- U2 (#240)/#254: narrative kinds carry their whole text in the payload
+            out[#out + 1] = e.to
+        elseif tostring(e.k):sub(1, 4) == "dyn_" then
+            -- U2 (#240): generated-event eligibility (Bannerlord spread port): involved faction
+            -- (or "all") passing the role filter knows; importance >= 8 knows REGARDLESS.
+            local vrole = (type(viewer) == "table") and tostring(viewer.role or "") or ""
+            local vfac = (type(viewer) == "table") and tostring(viewer.faction or "") or ""
+            local imp = tonumber(e.i) or 5
+            local involved = (e.a == "all") or (vfac ~= "" and (e.a == vfac or e.b == vfac))
+            local roleok = (e.ap == nil) or (e.ap == "all") or (e.ap == vrole)
+            if (involved and roleok) or imp >= 8 or vfac == "" then out[#out + 1] = e.to end
         else out[#out + 1] = "relations between " .. e.a .. " and " .. e.b .. " have shifted to " .. (e.to ~= "" and e.to or "a new footing") end
     end
     return out
@@ -735,7 +794,7 @@ function AI_Influence.HydrateWorldEvents()
     AI_Influence.LoadCard(WORLDEV_TOKEN, function(card)
         local stored = (type(card) == "table" and type(card.evts) == "table") and card.evts or {}
         local mem = AI_Influence._worldEvents or {}
-        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d) end
+        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap }) end
         AI_Influence._worldEvents = stored
         log("world-events ledger hydrated n=" .. tostring(#stored))
     end)
@@ -1020,6 +1079,15 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
             for _, a in ipairs(card.aliases) do if a == ctx.target then seen = true end end
             if not seen then card.aliases[#card.aliases + 1] = tostring(ctx.target) end
         end
+        -- #261: "sim persona" - clear the minted identity so THIS turn re-mints it with the
+        -- (now-corrected) role grounding. One-shot flag; the card write persists the clean slate.
+        if AI_Influence._remintNext then
+            AI_Influence._remintNext = nil
+            card.persona = nil
+            card.backstory = nil
+            card.quirks = nil
+            log("persona/backstory/quirks cleared for re-mint token=" .. token)
+        end
         local sys = "You are " .. tostring(ctx.target or "a station officer") .. ", a "
             .. tostring(ctx.role or "officer") .. " of the " .. tostring(ctx.faction or "argon")
             .. " faction on a station in the X4 galaxy. Stay in character. Reply in 1-3 short sentences."
@@ -1036,6 +1104,36 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         if type(card.persona) == "string" and card.persona ~= "" then
             sys = sys .. " Your established persona: " .. card.persona .. " — stay true to that character."
         end
+        -- #245 (M2): the minted personal history rides every prompt - a CONSISTENT character forever
+        if type(card.backstory) == "string" and card.backstory ~= "" then
+            sys = sys .. " Your history: " .. card.backstory
+        end
+        if type(card.quirks) == "string" and card.quirks ~= "" then
+            sys = sys .. " Your quirks (show them naturally): " .. card.quirks .. "."
+        end
+        -- U-D1: engine-owned dice ride the prompt; the LLM classifies the attempt and OBEYS the tier
+        local dnd = AI_Influence.DndTurnCheck(ctx, card)
+        if dnd then sys = sys .. dnd.prompt end
+        -- U-D4a: real credit transfers (player-confirmed; MD validates ownership before moving money)
+        sys = sys .. " REAL PAYMENTS: when you and the player have explicitly AGREED on a payment from them"
+            .. ' to you, include "transfer":{"credits":<whole number>,"direction":"to_npc","for":"<what it'
+            .. ' pays for>"} in the JSON. The game then asks the player to confirm and moves REAL credits.'
+            .. " Never claim a payment happened unless a [Transfer complete] note appears in the conversation."
+            .. " If a [Transfer complete] note for a payment ALREADY appears, that deal is SETTLED - never propose the same transfer again."
+            .. ' When a payment buys trade information, add "deliverable":"trade_summary" to the transfer -'
+            .. " the game will then compile a REAL trade dossier from this station's actual stock and put it"
+            .. " in the player's logbook. If the player ALREADY paid for information and asks for it, include"
+            .. ' "transfer":{"credits":0,"direction":"to_npc","for":"delivery of paid intel","deliverable":"trade_summary"}'
+            .. " - a zero-credit transfer delivers without charging. Other deliverables you may offer when"
+            .. ' agreed: "production_priority" (you are a MANAGER prioritizing stock for the player - real'
+            .. ' units appear in your station storage) and "blind_eye" (you agree to scrub the player from'
+            .. " security records at your faction's stations for a day - only offer if corruptible)."
+        -- doc-07a (#237): station security analyst (Bannerlord combat call-1 port, per-turn)
+        sys = sys .. " STATION SECURITY: if the player commits or credibly threatens VIOLENCE aboard"
+            .. ' this station, include "security_alert":{"severity":"minor"|"major",'
+            .. '"player_identified":true|false,"description":"<1 sentence>"}.'
+            .. " player_identified true ONLY if you actually know who the player is from THIS"
+            .. " conversation - if they stayed anonymous, their reputation cannot be blamed."
         -- P3-a grounding (serverless): real standing + location, read by MD from the live galaxy.
         if ctx.standing and ctx.standing ~= "" then
             sys = sys .. " The player's current standing with your faction is " .. tostring(ctx.standing)
@@ -1074,7 +1172,8 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         end
         -- #212: recent world events ride every prompt (serverless event awareness, zero extra calls)
         -- #214: gated by viewer location — crises are local knowledge, diplomacy is galaxy-common
-        local evLines = AI_Influence.WorldEventLines(AI_Influence._worldEvents, 5, { psector = ctx.psector })
+        local evLines = AI_Influence.WorldEventLines(AI_Influence._worldEvents, 5,
+            { psector = ctx.psector, role = tostring(ctx.role or ""), faction = tostring(ctx.faction or "") })
         if #evLines > 0 then
             sys = sys .. " Recent galactic news you are aware of: " .. table.concat(evLines, "; ")
                 .. ". You may reference these events but never invent others."
@@ -1102,15 +1201,27 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         if not (type(card.persona) == "string" and card.persona ~= "") then
             sys = sys .. ' Also include "persona":"<a 3-6 word character sketch of yourself, e.g. gruff veteran'
                 .. ' dock chief>" in the JSON — invent a fitting personality for your role and faction.'
+            -- #245 (M2): backstory + quirks mint on the same first exchange (Bannerlord memory fidelity)
+            sys = sys .. ' Also include "backstory":"<2 short sentences of personal history consistent with'
+                .. ' your role, faction and culture - where you served, what shaped you>" and'
+                .. ' "quirks":"<1-2 short habits or verbal tics, comma-separated>" in the JSON.'
         end
         -- #217: an OWNED captain may take a patrol order through conversation (single-call pattern)
         if tostring(ctx.npc_owned or "") == "1" and ctx.npc_ship and tostring(ctx.npc_ship) ~= "" then
             sys = sys .. ' You captain the player!s ship ' .. tostring(ctx.npc_ship) .. '. If the player has'
                 .. ' CLEARLY given you one of these orders in this exchange, also include'
-                .. ' "order":"patrol|return|hold|attack|follow" (patrol this sector / return to the player!s'
-                .. ' area / hold position / attack hostiles / follow the player) in the JSON and acknowledge'
-                .. ' the order in your reply;'
-                .. ' otherwise omit it entirely.'
+                .. ' "orders":[{"verb":"patrol|return|hold|attack|follow|deploy|explore|trade|mine|dock'
+                .. '|collect","sector":"<EXACT sector name, or omit for the current sector>"}] in the JSON'
+                .. ' - up to 3 steps, executed strictly IN SEQUENCE (the ship finishes step 1, then does'
+                .. ' step 2...). A multi-part instruction like "patrol Hatikvah!s Choice, then dock in'
+                .. ' Argon Prime" becomes two steps with their sectors. Verbs: patrol/hold (guard zone),'
+                .. ' attack (hostiles there), trade/mine (automated work - refuse in character if your ship'
+                .. ' is unsuited), dock (dock+wait), collect (sweep cargo), explore (wander), follow (the'
+                .. ' player), return (to the player!s area), deploy (whole battlegroup pickets - current'
+                .. ' sector only). Acknowledge the FULL sequence in your reply.'
+                .. ' CRITICAL: these are the ONLY ship actions that physically exist - if the player asks for'
+                .. ' anything else, do NOT promise it; say plainly what you CAN do instead. A promise without'
+                .. ' the order field is a lie to your commander.'
         end
         -- doc 06: only the deepest bond tier may seal a pact; ask for the optional commitment field then.
         if AI_Influence.CommitmentAllowed(btier) and not AI_Influence.HasCommitment(card) then
@@ -1122,6 +1233,15 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
             messages[#messages + 1] = { role = t.role, content = t.text }
         end
         messages[#messages + 1] = { role = "user", content = text }
+        -- #247 (M4): episodic session accumulator (flushed to the card on conversation close)
+        local ss = AI_Influence._session
+        if not ss or ss.token ~= token then
+            ss = { token = token, target = tostring(ctx.target or ""), sector = tostring(ctx.psector or ""), turns = 0, paid = 0, checks = {} }
+            AI_Influence._session = ss
+        end
+        ss.turns = ss.turns + 1
+        AI_Influence._lastPsector = tostring(ctx.psector or AI_Influence._lastPsector or "")
+        AI_Influence._lastPFaction = tostring(ctx.faction or AI_Influence._lastPFaction or "argon")
         log("SendDirectChat token=" .. token .. " (" .. tokenSource .. ") turns=" .. tostring(#card.turns))
         AI_Influence.SendDirect(messages, { max_tokens = 260, response_format = { type = "json_object" } },
         function(ok, raw, usage, err)
@@ -1139,8 +1259,194 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                     log("npc chose deception (total " .. tostring(card.deceits) .. ") token=" .. tostring(token))
                 end
             end
+            -- U-D1: the ENGINE owns the check verdict - recompute from the precomputed outcome table,
+            -- audit-log it, spend the attempt (cached roll: a reload replays the same result), show
+            -- the dice in the plate, and let the tier GATE real effects below.
+            local checkTier = nil
+            if dnd and json and json.decode then
+                local okc, objc = pcall(json.decode, raw)
+                local ci = (okc and type(objc) == "table" and type(objc.check) == "table") and tostring(objc.check.intent or "") or ""
+                local oc = dnd.outcomes[ci]
+                if oc then
+                    checkTier = oc.tier
+                    card.dnd_n = dnd.n
+                    card.dnd_att = (type(card.dnd_att) == "table") and card.dnd_att or {}
+                    card.dnd_att[ci] = (card.dnd_att[ci] or 0) + 1
+                    -- #241: a landed threat instills FEAR (helps future threats, decays into resentment)
+                    if ci == "threaten" and (checkTier == "SUCCESS" or checkTier == "EXCEPTIONAL") then
+                        card.fear = math.min(10, (tonumber(card.fear) or 0) + 2)
+                        card.fear_day = gameDay()
+                        log("fear +2 -> " .. tostring(card.fear) .. " token=" .. token)
+                    end
+                    -- #241 (scenario 5): a landed POACH on someone else's crew mints an INFORMANT -
+                    -- a permanent secret on the card the NPC roleplays forever after
+                    -- #251 (scenario 3): a landed threat against ANOTHER faction's captain shakes
+                    -- them down - MD makes their ship jettison REAL cargo (drop_cargo, schema-grounded)
+                    if ci == "threaten" and (checkTier == "SUCCESS" or checkTier == "EXCEPTIONAL") and (not ctx.npc_owned) and tostring(ctx.npc_ship or "") ~= "" and AddUITriggeredEvent then
+                        pcall(function() AddUITriggeredEvent("ai_influence", "shakedown", {}) end)
+                        log("SHAKEDOWN dispatched ship=" .. tostring(ctx.npc_ship))
+                    end
+                    if ci == "poach" and (checkTier == "SUCCESS" or checkTier == "EXCEPTIONAL") and not ctx.npc_owned then
+                        AI_Influence.AddCardFact(card, "secretly agreed to feed the player information about their employer", "npc_claim", 18, "secret")
+                        card.informant = gameDay()
+                        log("INFORMANT recruited token=" .. token)
+                    end
+                    if checkTier == "CATASTROPHIC" then
+                        card.trust = math.max(-10, (tonumber(card.trust) or 0) - 2)
+                        card.dnd_cd = (type(card.dnd_cd) == "table") and card.dnd_cd or {}
+                        card.dnd_cd[ci] = gameDay() + 2   -- U-D6: red-check lockout, persisted on the card
+                        log("DND cooldown armed intent=" .. ci .. " until day " .. tostring(card.dnd_cd[ci]))
+                    end
+                    log("DND check intent=" .. ci .. " chance=" .. oc.chance .. " roll=" .. dnd.roll .. " tier=" .. oc.tier .. " [" .. tostring(dnd.statsnap) .. "] token=" .. token)
+                    if AI_Influence._session and AI_Influence._session.token == token then
+                        table.insert(AI_Influence._session.checks, ci .. " " .. string.lower(oc.tier))
+                    end
+                    local tmc = rawget(_G, "X4_Terminal_Menu")
+                    if tmc and tmc.currentContext and tostring(tmc.currentContext.target) == tostring(ctx.target) then
+                        tmc.lastCheck = { intent = ci, chance = oc.chance, roll = dnd.roll, tier = oc.tier }
+                    end
+                end
+            end
+            local dndBlocked = (checkTier == "FAIL" or checkTier == "CATASTROPHIC")
+            -- U-D5 (#244): hand the NEXT turn's odds to the plate as confidence BANDS (docs:
+            -- semi-transparent beats raw % - legible without inviting spreadsheet play)
+            if dnd then
+                local tmo = rawget(_G, "X4_Terminal_Menu")
+                if tmo and tmo.currentContext and tostring(tmo.currentContext.target) == tostring(ctx.target) then
+                    local nxt = AI_Influence.DndTurnCheck(ctx, card)
+                    if nxt then
+                        local order = { "persuade", "bribe", "threaten", "deceive", "poach" }
+                        local parts = {}
+                        for _, id in ipairs(order) do
+                            local o = nxt.outcomes[id]
+                            if o then
+                                local band = (o.chance > 85 and "near-certain") or (o.chance > 65 and "likely")
+                                    or (o.chance > 45 and "even") or (o.chance > 25 and "risky") or "long shot"
+                                parts[#parts + 1] = id .. ": " .. band
+                            end
+                        end
+                        tmo.lastOdds = table.concat(parts, "  |  ")
+                    end
+                end
+            end
+            -- U-D4a: transfer proposal -> the plate's Confirm/Decline gate; nothing moves until the
+            -- player confirms AND MD verifies the payer actually owns the credits.
+            if json and json.decode then
+                local okt, objt = pcall(json.decode, raw)
+                local tr = (okt and type(objt) == "table" and type(objt.transfer) == "table") and objt.transfer or nil
+                if tr and tostring(tr.direction) == "to_npc" and not dndBlocked then
+                    local amt = math.floor(tonumber(tr.credits) or 0)
+                    local DLV_OK = { trade_summary = true, production_priority = true, blind_eye = true }
+                    local dlv = DLV_OK[tostring(tr.deliverable)] and tostring(tr.deliverable) or nil
+                    if amt == 0 and dlv then
+                        -- U-D4b: delivery of ALREADY-PAID goods - no charge, no confirm gate
+                        local why0 = tostring(tr["for"] or "delivery of paid intel"):sub(1, 80)
+                        AI_Influence._settled = AI_Influence._settled or {}
+                        local skey0 = token .. "|0|" .. why0
+                        if not AI_Influence._settled[skey0] then
+                            AI_Influence._settled[skey0] = true
+                            AI_Influence._pendingTransfer = { token = token, amt = 0, why = why0, target = tostring(ctx.target) }
+                            if AddUITriggeredEvent then
+                                pcall(function() AddUITriggeredEvent("ai_influence", "aic_transfer", { credits = 0, why = why0, deliverable = dlv }) end)
+                            end
+                            log("free delivery dispatched: " .. dlv)
+                        else
+                            log("free delivery SUPPRESSED (already delivered): " .. skey0)
+                        end
+                    elseif amt >= 1 and amt <= 500000 then
+                        local why = tostring(tr["for"] or "an agreed exchange"):sub(1, 80)
+                        -- #230b: SETTLED deals stay settled - the LLM re-proposed an already-paid
+                        -- 1200 Cr fee and double-charged Ken. Same token+amount+purpose = blocked.
+                        AI_Influence._settled = AI_Influence._settled or {}
+                        local skey = token .. "|" .. amt .. "|" .. why
+                        if AI_Influence._settled[skey] then
+                            log("transfer proposal SUPPRESSED (already settled): " .. skey)
+                            why = nil
+                        end
+                        if why then
+                        AI_Influence._pendingTransfer = { token = token, amt = amt, why = why, target = tostring(ctx.target) }
+                        local tmt = rawget(_G, "X4_Terminal_Menu")
+                        if tmt and tostring(tmt.currentContext and tmt.currentContext.target) == tostring(ctx.target) then
+                            tmt._pendingAction = { control = "aic_transfer", credits = amt, why = why, deliverable = dlv }
+                            tmt.history = tmt.history or {}
+                            table.insert(tmt.history, { role = "assistant", text = "[Payment proposed: " .. amt .. " Cr - " .. why .. ". Confirm or decline below.]", err = true })
+                        end
+                        log("transfer proposed amt=" .. amt .. " why=" .. why)
+                        end
+                    end
+                end
+            end
+            -- doc-07a (#237): STATION SECURITY - the engine executes what the analyst found.
+            -- Deterministic correction rule (the port's needs_defenders/civilian_panic style):
+            -- severity may only be "major" when THIS turn's check was a CATASTROPHIC threaten -
+            -- the engine, not the model, decides what force means.
+            if json and json.decode then
+                local oks, objs = pcall(json.decode, raw)
+                local sa = (oks and type(objs) == "table" and type(objs.security_alert) == "table") and objs.security_alert or nil
+                if sa then
+                    local sev = (tostring(sa.severity) == "major") and "major" or "minor"
+                    if sev == "major" and checkTier ~= "CATASTROPHIC" then sev = "minor" end
+                    local ident = (sa.player_identified == true)
+                    -- doc-07 crew loyalty (#250): YOUR OWN crew's bond decides whether they cover for
+                    -- you - deeply bonded crew never identify you to security; estranged crew might,
+                    -- and they judge you for the incident either way.
+                    if ctx.npc_owned then
+                        local cb = tonumber(card.bond) or 0
+                        if cb >= 55 then
+                            ident = false
+                            log("SECURITY crew-loyalty: bonded crew (" .. cb .. ") covers for the player")
+                        elseif cb < 25 then
+                            card.trust = math.max(-10, (tonumber(card.trust) or 0) - 1)
+                            log("SECURITY crew-loyalty: estranged crew (" .. cb .. ") judges the player")
+                        end
+                    end
+                    local sdesc = tostring(sa.description or "a security incident aboard the station"):sub(1, 160)
+                    AI_Influence.AddCardFact(card, "witnessed the player provoke station security (" .. sev .. ")", "npc_claim", 14, "relationship")
+                    -- doc-07b (#248): repeat-offender count DERIVED from the ledger (last 3 game-days,
+                    -- same faction) - persisted for free, no extra state.
+                    local repN = 1
+                    for _, se in ipairs(AI_Influence._worldEvents or {}) do
+                        if se.k == "security" and se.a == tostring(ctx.faction or "") and (gameDay() - (tonumber(se.d) or 0)) <= 3 then repN = repN + 1 end
+                    end
+                    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "security", tostring(ctx.faction or ""), "", sdesc, gameDay())
+                    persistWorldEvents()
+                    if AddUITriggeredEvent then
+                        pcall(function() AddUITriggeredEvent("ai_influence", "security_alert", {
+                            severity = sev, identified = ident, faction = tostring(ctx.faction or ""), desc = sdesc, repeat_n = repN }) end)
+                    end
+                    log("SECURITY alert sev=" .. sev .. " identified=" .. tostring(ident) .. " repeat_n=" .. repN .. " faction=" .. tostring(ctx.faction))
+                    -- doc-07b (#248): a MAJOR identified incident spawns the AFTERMATH through the
+                    -- event generator (combat call-2 port) - the just-ledgered incident is in the
+                    -- generator's existing-events feed, and the prompt prefers DEVELOPING it.
+                    if sev == "major" and ident then
+                        pcall(AI_Influence.DynEventGenerate, "political")
+                    end
+                end
+            end
+            -- #265 (U7): STRUCTURED ORDER SETS - up to 3 validated steps with named sectors,
+            -- executed sequentially via the engine's native order QUEUE (schema-confirmed).
+            if not dndBlocked and json and json.decode and AddUITriggeredEvent then
+                local oko, objo = pcall(json.decode, raw)
+                local olist = (oko and type(objo) == "table" and type(objo.orders) == "table") and objo.orders or nil
+                if olist then
+                    local payload = { n = 0 }
+                    for i = 1, math.min(3, #olist) do
+                        local step = olist[i]
+                        if type(step) == "table" and AI_Influence.OrderAllowed(ctx, step.verb) then
+                            payload.n = payload.n + 1
+                            payload["v" .. payload.n] = tostring(step.verb)
+                            payload["s" .. payload.n] = tostring(step.sector or ""):sub(1, 40)
+                        end
+                    end
+                    if payload.n > 0 then
+                        pcall(function() AddUITriggeredEvent("ai_influence", "player_orders", payload) end)
+                        log("ORDER SET dispatched steps=" .. payload.n .. " ship=" .. tostring(ctx.npc_ship))
+                        order = nil   -- #266: the set supersedes any legacy single-order field (no double dispatch)
+                    end
+                end
+            end
             -- #217: whitelist + ownership gate, then hand execution to MD (proven create_order lane)
-            if order and AI_Influence.OrderAllowed(ctx, order) and AddUITriggeredEvent then
+            if order and not dndBlocked and AI_Influence.OrderAllowed(ctx, order) and AddUITriggeredEvent then
                 pcall(function() AddUITriggeredEvent("ai_influence", "player_order", { order = tostring(order) }) end)
                 log("player order dispatched: " .. tostring(order) .. " ship=" .. tostring(ctx.npc_ship))
             end
@@ -1151,7 +1457,9 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 local okd, obj = pcall(json.decode, raw)
                 if okd and type(obj) == "table" and type(obj.diplomatic_statement) == "table" then ds = obj.diplomatic_statement end
             end
-            if ds then
+            -- U-D catalog #8: the dice GATE player diplomacy - a failed attempt means this NPC
+            -- refuses to carry your statement to their faction (and the reply says so in character).
+            if ds and not dndBlocked then
                 local tgt = AI_Influence.ValidatePlayerDiploTarget(ctx.faction, ds.target_faction)
                 local stance = (tostring(ds.stance) == "hostile" or tostring(ds.stance) == "friendly") and tostring(ds.stance) or nil
                 if tgt and stance and AddUITriggeredEvent then
@@ -1165,21 +1473,62 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 card.persona = tostring(persona):sub(1, 80)
                 log("persona minted: " .. card.persona)
             end
+            -- #245 (M2): backstory + quirks mint once (non-checksum scalars, like trust/bond)
+            if json and json.decode then
+                local okm, objm = pcall(json.decode, raw)
+                if okm and type(objm) == "table" then
+                    if type(objm.backstory) == "string" and objm.backstory ~= "" and not (type(card.backstory) == "string" and card.backstory ~= "") then
+                        card.backstory = tostring(objm.backstory):sub(1, 280)
+                        log("backstory minted: " .. card.backstory:sub(1, 60))
+                    end
+                    if type(objm.quirks) == "string" and objm.quirks ~= "" and not (type(card.quirks) == "string" and card.quirks ~= "") then
+                        card.quirks = tostring(objm.quirks):sub(1, 120)
+                        log("quirks minted: " .. card.quirks)
+                    end
+                end
+            end
             -- doc 06: seal a formal pact only if the top tier permits AND none exists yet (Lua is the gate).
-            if commitment and AI_Influence.CommitmentAllowed(btier) and not AI_Influence.HasCommitment(card) then
+            if commitment and not dndBlocked and AI_Influence.CommitmentAllowed(btier) and not AI_Influence.HasCommitment(card) then
                 AI_Influence.RecordCommitment(card, commitment, gameDay())
                 AI_Influence.AddCardFact(card, "sealed a standing " .. tostring(commitment) .. " with the player",
                     "npc_claim", 20, "relationship")
                 log("SendDirectChat commitment sealed kind=" .. tostring(commitment))
             end
+            -- #228: the OVERLAY owns the live choices - hand the fresh topics to its plate buttons
+            -- BEFORE onReply triggers the redraw, so the choices land WITH the reply (never stale).
+            -- #228c (review): identity-guarded - a late reply may not write another NPC's plate; the
+            -- label is the FULL line (wide plate; 28-byte wheel cut retired); the MD 'suggestions'
+            -- event raise is gone (On_suggestions deleted - its state had no readers left).
+            -- No topics this turn => empty list => the plate falls back to the preset openers.
             local sug = AI_Influence.SuggestionsOut(topics)
-            if sug and AddUITriggeredEvent then
-                pcall(function() AddUITriggeredEvent("ai_influence", "suggestions", sug) end)
-                log("suggestions (serverless) n=" .. tostring(sug.n))
+            if sug then log("topics (overlay) n=" .. tostring(sug.n)) end
+            local tm = rawget(_G, "X4_Terminal_Menu")
+            if tm and tm.currentContext and tostring(tm.currentContext.target) == tostring(ctx.target) then
+                local list = {}
+                if sug then
+                    for si = 1, (sug.n or 0) do
+                        local st = sug["t" .. si]
+                        if st and st ~= "" then list[#list + 1] = { label = tostring(st), line = tostring(st) } end
+                    end
+                end
+                tm.suggestions = list
             end
             card.turns[#card.turns + 1] = { role = "user", text = text }
             card.turns[#card.turns + 1] = { role = "assistant", text = reply }
             while #card.turns > CARD_MAX_TURNS do table.remove(card.turns, 1) end
+            -- #241 (U-D6c): fear decays to baseline, CONVERTING to resentment - intimidation is
+            -- never free; a bullied NPC cooperates worse with every approach later.
+            local cf = tonumber(card.fear) or 0
+            if cf > 0 then
+                local elapsed = gameDay() - (tonumber(card.fear_day) or gameDay())
+                if elapsed > 0 then
+                    local dec = math.min(cf, elapsed)
+                    card.fear = cf - dec
+                    card.resent = math.min(10, (tonumber(card.resent) or 0) + math.ceil(dec / 2))
+                    card.fear_day = gameDay()
+                    log("fear decay -" .. dec .. " -> resent " .. tostring(card.resent))
+                end
+            end
             AI_Influence.AddBond(card, 3, ctx.faction); card.bond_day = gameDay()   -- doc 06: interaction deepens the bond
             AI_Influence.StoreCard(token, card)
             AI_Influence.NoteInteraction(token, ctx, card)   -- #210: keep the initiative index current
@@ -1250,6 +1599,347 @@ function AI_Influence.ParseStructuredReply(raw)
         end
     end
     return raw, {}, {}, nil, nil, nil   -- not the contract; show the raw line, extract nothing
+end
+
+-- ============================================================================
+-- U-D1 (#229): D&D CHECK LAYER - engine-owned dice. The LLM decides WHAT is
+-- attempted; the dice decide WHETHER it lands; the engine executes what survives
+-- (Ken 2026-07-22). Player stats are DERIVED from live game state; NPC traits are
+-- MINTED (X4 does not track them) deterministically per NPC and stored on the card.
+-- ============================================================================
+AI_Influence.DND_ENABLED = true   -- toggle: type "dnd off" / "dnd on" in the chat box (MD persistence: U-D6)
+
+local DND_INTENTS = {
+    { id = "persuade", P = "negotiation", R = "duty", base = 30 },
+    { id = "bribe", P = "leverage", R = "duty", base = 40 },
+    { id = "threaten", P = "resolve", R = "nerve", base = 45 },
+    { id = "deceive", P = "guile", R = "suspicion", base = 35 },
+    { id = "poach", P = "negotiation", R = "duty", base = 50 },   -- #241: recruit them away (scenario 5)
+}
+local DND_TIERS = {   -- margin = chance - roll
+    { min = 35, id = "EXCEPTIONAL", play = "grant it fully and add an unexpected extra" },
+    { min = 0, id = "SUCCESS", play = "grant the request" },
+    { min = -10, id = "PARTIAL", play = "concede only part of it, or attach a price or condition" },
+    { min = -35, id = "FAIL", play = "refuse in character; the attempt does not work on you" },
+    { min = -999, id = "CATASTROPHIC", play = "refuse angrily; the player has damaged your regard for them" },
+}
+local function djb2n(s)
+    local h = 5381
+    for i = 1, #s do h = (h * 33 + string.byte(s, i)) % 4294967296 end
+    return h
+end
+-- invented NPC traits (0-10, hidden): deterministic from the token, tinted by culture, minted once.
+function AI_Influence.DndTraits(card, token, faction)
+    if type(card.dnd) == "table" then return card.dnd end
+    local h = djb2n("dndtraits|" .. tostring(token))
+    local f = tostring(faction or ""):lower()
+    local t = {
+        greed = (h % 7) + ((f:find("teladi") or f:find("scale")) and 4 or 2),
+        duty = (math.floor(h / 7) % 7) + ((f:find("argon") or f:find("terran")) and 4 or 2),
+        nerve = (math.floor(h / 49) % 7) + (f:find("split") and 4 or 2),
+        suspicion = (math.floor(h / 343) % 7) + (f:find("paranid") and 4 or 2),
+    }
+    for k, v in pairs(t) do t[k] = math.min(10, v) end
+    card.dnd = t
+    return t
+end
+-- player stats derived from LIVE grounded state (slice signals; U-D2 adds wallet/combat rank/fleet)
+function AI_Influence.DndPlayerStats(ctx, card)
+    local standMap = { hostile = 0, unfriendly = 2, neutral = 4, friendly = 7, allied = 10 }
+    local status = standMap[tostring(ctx.standing or "neutral")] or 4
+    local trust = tonumber(card.trust) or 0
+    local bond = tonumber(card.bond) or 0
+    -- U-D2 (#232): REAL power - wallet on a log scale (1k Cr -> 3, 100k -> 5, 10M -> 7, 1B -> 9)
+    -- and fight ships parked in THIS sector. Standing-derived stand-ins remain the fallback when
+    -- MD sent no grounding (pre-U-D2 param string).
+    local pmoney = tonumber(ctx.pmoney)
+    local pfleet = tonumber(ctx.pfleet)
+    local leverage = pmoney and math.min(10, math.max(1, math.floor(math.log(pmoney + 1) / math.log(10)))) or math.min(10, 3 + status)
+    local resolve = pfleet and math.min(10, (ctx.npc_owned and 5 or 2) + pfleet) or (ctx.npc_owned and 8 or 4)
+    return {
+        negotiation = math.min(10, 3 + math.floor(bond / 15) + math.floor(trust / 3)),
+        leverage = leverage,
+        resolve = resolve,
+        guile = math.max(0, 6 - (tonumber(card.deceits) or 0)),   -- a caught-liar reputation erodes bluffs
+        status = status,
+    }
+end
+function AI_Influence.DndChance(intent, stats, traits, trust, card)
+    local P = stats[intent.P] or 4
+    local R = traits[intent.R] or 5
+    local rel = math.floor((tonumber(trust) or 0) / 2) + math.floor((stats.status or 4) / 2)
+    local c = 50 + (6 * P) - (5 * R) + (2 * rel) - intent.base
+    -- #241 (U-D6c): resentment poisons EVERY approach; fear makes threats land (Skyrim rule)
+    if type(card) == "table" then
+        c = c - (math.floor((tonumber(card.resent) or 0) / 2) * 2)
+        if intent.id == "threaten" then c = c + ((tonumber(card.fear) or 0) * 2) end
+    end
+    return math.max(5, math.min(95, c))
+end
+-- ONE seeded roll per attempt, cached against the card: reload replays the SAME attempt (anti-scum).
+function AI_Influence.DndTurnCheck(ctx, card)
+    if not AI_Influence.DND_ENABLED then return nil end
+    local token = tostring(ctx.target or "") .. "|" .. tostring(ctx.npc_ship or "")
+    local n = (tonumber(card.dnd_n) or 0) + 1
+    local roll = (djb2n("dndroll|" .. token .. "|" .. tostring(n)) % 100) + 1
+    local traits = AI_Influence.DndTraits(card, token, ctx.faction)
+    local stats = AI_Influence.DndPlayerStats(ctx, card)
+    local lines, outcomes = {}, {}
+    local statsnap = "neg=" .. stats.negotiation .. " lev=" .. stats.leverage .. " res=" .. stats.resolve .. " gui=" .. stats.guile
+    local att = (type(card.dnd_att) == "table") and card.dnd_att or {}
+    local cds = (type(card.dnd_cd) == "table") and card.dnd_cd or {}
+    local today = gameDay()
+    for _, it in ipairs(DND_INTENTS) do
+        -- #260 polish: you cannot POACH your own crew - the intent vanishes from their table/Read
+        if it.id == "poach" and ctx.npc_owned then
+        else
+        -- U-D6: CATASTROPHIC locks the intent for 2 game-days on this NPC (red-check port)
+        if (tonumber(cds[it.id]) or 0) > today then
+            local tier = DND_TIERS[#DND_TIERS]
+            outcomes[it.id] = { chance = 5, tier = tier.id }
+            lines[#lines + 1] = it.id .. " -> REFUSED OUTRIGHT: they are done entertaining this approach for now"
+        else
+        local chance = AI_Influence.DndChance(it, stats, traits, card.trust, card)
+        -- U-D6: anti-farm - each PRIOR attempt of this intent on this NPC costs 10 points, forever
+        -- (both research docs' "repeated same request" rule; the card persists it).
+        chance = math.max(5, chance - 10 * (att[it.id] or 0))
+        local margin = chance - roll
+        local tier
+        for _, t in ipairs(DND_TIERS) do if margin >= t.min then tier = t break end end
+        outcomes[it.id] = { chance = chance, tier = tier.id }
+        lines[#lines + 1] = it.id .. " -> " .. tier.id .. ": " .. tier.play
+        end
+        end
+    end
+    local prompt = " DICE CHECK RULES: if (and ONLY if) the player's latest line is an ATTEMPT to persuade,"
+        .. " bribe, threaten, deceive, or POACH you (recruit you away from your employer), the dice have"
+        .. " ALREADY decided how it lands and you MUST play that outcome faithfully: " .. table.concat(lines, "; ")
+        .. '. When an attempt occurred, also include "check":{"intent":"<persuade|bribe|threaten|deceive|poach>"}'
+        .. " in the JSON. Ordinary conversation: no check field, ignore these rules."
+    return { prompt = prompt, roll = roll, n = n, outcomes = outcomes, statsnap = statsnap }
+end
+
+-- ============================================================================
+-- U4a (#234): doc-02 DYNAMIC EVENT GENERATOR - the Bannerlord DynamicEventsGenerator
+-- port (portspecs/dynamic_events.md). The LLM INVENTS galaxy events on a cadence;
+-- the validator gates them; accepted events land on the REAL ledger (rides every
+-- conversation prompt), fire a native news message, and - when they warrant a
+-- diplomatic response - hand off to the PROVEN diplomacy engine (MD caps at 4).
+-- Cadence: every 18 initiative ticks (~3 game-hours). Type roll: deterministic
+-- rotation over the 5 equal-weight types (spec defaults are 5 x 20%).
+-- ============================================================================
+local DYN_TYPES = { "military", "political", "economic", "social", "anomalous" }
+local DYN_FOCUS = {
+    military = "military matters - fleet movements, skirmishes escalating, war pressure between factions",
+    political = "politics (external or internal) of any factions - consider hidden motivations and ripple effects",
+    economic = "the economy - trade flows, shortages, how changes hit stations and different classes",
+    social = "social matters, cultures, personal stories, or galaxy-wide changes",
+    anomalous = "strange or unexplained phenomena consistent with the X4 universe (anomalies, lost ships, signals)",
+}
+function AI_Influence.DynEventTick()
+    AI_Influence._dynTicks = (AI_Influence._dynTicks or 0) + 1
+    if AI_Influence._dynTicks % 18 ~= 0 then return end
+    local ty = DYN_TYPES[(math.floor(AI_Influence._dynTicks / 18) % #DYN_TYPES) + 1]
+    AI_Influence.DynEventGenerate(ty)
+end
+function AI_Influence.DynEventGenerate(ty)
+    if not (json and json.decode) then log("dynevent: json not ready") return end
+    local evts = AI_Influence._worldEvents or {}
+    local existing = {}
+    for i = math.max(1, #evts - 9), #evts do
+        local e = evts[i]
+        if e then existing[#existing + 1] = "- [" .. tostring(e.k) .. "] " .. tostring(e.a) .. "/" .. tostring(e.b) .. " " .. tostring(e.to) end
+    end
+    local sys = "# MISSION: Generate Dynamic World Events\n"
+        .. "You are an intelligent world event generator for the X4: Foundations galaxy (faction ids:"
+        .. " argon, antigone, teladi, ministry, paranid, holyorder, split, freesplit, boron, terran,"
+        .. " pioneers, hatikvah, scaleplate, buccaneers, xenon, khaak).\n"
+        .. "CURRENT WORLD DATA is ground truth; EXISTING EVENTS below are history - avoid duplication;"
+        .. " when they conflict, current data wins.\n"
+        .. "CORE RULES: aggregate into narrative, be specific, avoid cliches. TITLE: 10-50 char headline"
+        .. " (no ids). DESCRIPTION: 100-400 chars, human-readable faction names.\n"
+        .. "EVENT STRUCTURE - MUST include: 1) CAUSE 2) ACTION 3) CONSEQUENCE. Prefer DEVELOPING the"
+        .. " existing tensions below over inventing new minor incidents.\n"
+        .. "CREATIVE DIRECTION (" .. ty .. "): focus on " .. (DYN_FOCUS[ty] or DYN_FOCUS.political) .. ".\n"
+        .. "EXISTING EVENTS (do not duplicate):\n" .. table.concat(existing, "\n") .. "\n"
+        .. "FIELDS: factions_involved = array of lowercase faction IDS from the list above (never null;"
+        .. ' ["all"] for galaxy-wide); economic events MAY add "economic_effects":[{"target_sector":'
+        .. '"<sector name>","contract_payout":<50000-300000>,"reason":"..."}] - the game will mint a'
+        .. " REAL support contract there; importance 1-10; applicable_npcs one of all/manager/crew/marine"
+        .. " (who would hear of this); allows_diplomatic_response true ONLY for"
+        .. " wars/alliances/peace/territory matters between two named factions.\n"
+        .. 'Return STRICT JSON: {"events":[{"type":"' .. ty .. '","title":"...","description":"...",'
+        .. '"factions_involved":["..."],"importance":5,"applicable_npcs":["all"],"allows_diplomatic_response":false}]}'
+    log("DYNEVENT generating type=" .. ty)
+    AI_Influence.SendDirect({ { role = "system", content = sys } },
+        { max_tokens = 320, response_format = { type = "json_object" } },
+    function(ok, raw)
+        if not ok then log("dynevent call failed") return end
+        local okj, obj = pcall(json.decode, raw)
+        local ev = (okj and type(obj) == "table") and ((type(obj.events) == "table" and obj.events[1]) or obj) or nil
+        if type(ev) ~= "table" then log("DYNEVENT rejected: unparseable") return end
+        local t2 = tostring(ev.type or ty):lower()
+        local okType = (t2 == "news")
+        for _, x in ipairs(DYN_TYPES) do if x == t2 then okType = true end end
+        if not okType then log("DYNEVENT rejected: type " .. t2) return end
+        local title = tostring(ev.title or ""):sub(1, 50)
+        local desc = tostring(ev.description or ""):sub(1, 400)
+        if #title < 5 or #desc < 40 then log("DYNEVENT rejected: too short") return end
+        local payload = title .. ": " .. desc:sub(1, 160)
+        local cur = AI_Influence._worldEvents or {}
+        for _, e in ipairs(cur) do
+            if e.to == payload then log("DYNEVENT rejected: duplicate") return end
+        end
+        local fi = (type(ev.factions_involved) == "table") and ev.factions_involved or {}
+        local fa = tostring(fi[1] or ""):lower():sub(1, 24)
+        local fb = tostring(fi[2] or ""):lower():sub(1, 24)
+        local imp = math.max(1, math.min(10, math.floor(tonumber(ev.importance) or 5)))
+        local apl = (type(ev.applicable_npcs) == "table") and tostring(ev.applicable_npcs[1] or "all"):lower() or "all"
+        if apl ~= "manager" and apl ~= "crew" and apl ~= "marine" then apl = "all" end
+        AI_Influence._worldEvents = AI_Influence.AddWorldEvent(cur, "dyn_" .. t2, fa, fb, payload, gameDay(), { i = imp, ap = apl })
+        persistWorldEvents()
+        if AddUITriggeredEvent then
+            pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
+                title = "Galactic News: " .. title, body = desc, sender = "Galaxy News Service", priority = "low" }) end)
+        end
+        log("DYNEVENT accepted type=" .. t2 .. " imp=" .. tostring(tonumber(ev.importance) or 5) .. " facs=" .. fa .. "/" .. fb .. " title=" .. title)
+        -- U3 (#246): bounded economic effects - ONLY economic events (spec 5.3), payout CLAMPED in
+        -- CODE 50k..300k (improving on Bannerlord's prompt-only bounds), executed via the proven
+        -- #215 contract mint lane. Pipe/equals stripped (the mint param is k=v| wire format).
+        if t2 == "economic" and type(ev.economic_effects) == "table" and type(ev.economic_effects[1]) == "table" then
+            local eff = ev.economic_effects[1]
+            local pay = math.floor(tonumber(eff.contract_payout) or 0)
+            if pay >= 1 then
+                pay = math.max(50000, math.min(300000, pay))
+                local sec2 = tostring(eff.target_sector or ""):gsub("[|=]", ""):sub(1, 40)
+                local mfac = (fa ~= "" and fa ~= "all") and fa or tostring(AI_Influence._lastPFaction or "argon")
+                local mtitle = ("Support: " .. title):gsub("[|=]", ""):sub(1, 48)
+                local msum = (tostring(eff.reason or desc)):gsub("[|=]", ""):sub(1, 120)
+                AI_Influence.MintContract("job=dyn_" .. tostring(gameDay()) .. "_" .. tostring(AI_Influence._dynTicks or 0)
+                    .. "|faction=" .. mfac .. "|reward=" .. tostring(pay) .. "|verb=patrol"
+                    .. (sec2 ~= "" and ("|sector=" .. sec2) or "") .. "|title=" .. mtitle .. "|summary=" .. msum)
+                log("DYNEVENT econ effect -> contract " .. tostring(pay) .. " Cr fac=" .. mfac .. " sector=" .. sec2)
+            end
+        end
+        -- diplomatic handoff (spec 5.6): only two NAMED, distinct factions; the MD table caps at 4
+        if ev.allows_diplomatic_response == true and fa ~= "" and fb ~= "" and fa ~= "all" and fb ~= "all" and fa ~= fb and AddUITriggeredEvent then
+            pcall(function() AddUITriggeredEvent("ai_influence", "diplo_open", { a = fa, b = fb, kind = "dynevent" }) end)
+            log("DYNEVENT diplomatic handoff " .. fa .. " vs " .. fb)
+        end
+    end)
+end
+
+-- U3 (#235): the diplomacy ANALYZER REFEREE (DynamicEventsAnalyzer port) - once per completed
+-- round the LLM decides continue/end + writes the narrative update; MD executes the verdict.
+-- Unanswered asks self-heal MD-side (+6 beats); round>=4 closes deterministically (failsafe).
+function AI_Influence.DiploAnalyze(param)
+    if not (json and json.decode) then log("diplo referee: json not ready") return end
+    local g = AI_Influence.parseBackendConfig(param)
+    if not (g and g.a and g.b) then return end
+    local sys = "You are the neutral diplomatic ANALYST for an ongoing situation in the X4 galaxy between"
+        .. " faction '" .. tostring(g.a) .. "' and faction '" .. tostring(g.b) .. "' (" .. tostring(g.kind or "tension") .. ")."
+        .. " Completed round: " .. tostring(g.round or 1) .. ". Statements exchanged: " .. tostring(g.n or 0) .. "."
+        .. " Current relation: " .. tostring(g.rel or "0") .. " (-1 war .. 1 allied)."
+        .. " Decide whether the negotiations should CONTINUE another round or END now, and write a 1-2"
+        .. " sentence public update of where things stand. End talks that have clearly converged or"
+        .. " deadlocked; continue talks with real movement left."
+        .. ' Respond STRICT JSON: {"verdict":"continue"|"end","update":"<1-2 sentences>"}'
+    AI_Influence.SendDirect({ { role = "system", content = sys } },
+        { max_tokens = 140, response_format = { type = "json_object" } },
+    function(ok, raw)
+        if not ok then log("diplo referee call failed (MD self-heals)") return end
+        local okj, obj = pcall(json.decode, raw)
+        if not (okj and type(obj) == "table") then log("diplo referee unparseable") return end
+        local v = tostring(obj.verdict or ""):lower()
+        if v ~= "continue" and v ~= "end" then log("diplo referee REJECTED verdict=" .. v) return end
+        local upd = tostring(obj.update or ""):sub(1, 240)
+        if AddUITriggeredEvent then
+            pcall(function() AddUITriggeredEvent("ai_influence", "diplo_verdict",
+                { a = tostring(g.a), b = tostring(g.b), verdict = v, update = upd }) end)
+        end
+        log("DIPLO REFEREE verdict=" .. v .. " " .. tostring(g.a) .. " vs " .. tostring(g.b))
+    end)
+end
+
+-- ============================================================================
+-- doc-04a (#238): CONTAGION core - the epidemic CLOCK + information layer + real
+-- economic bite. Outbreaks start rarely near the player, phase through
+-- outbreak -> peak -> contained -> clear on a game-day clock, announce each phase
+-- (ledger + Health Advisory message), and mint a REAL quarantine-support contract
+-- via the proven #215 lane. Persisted on its own card (vec-card shape pattern).
+-- R-spikes stay queued (undock block, crew death, combat-stat effects).
+-- ============================================================================
+function AI_Influence.ContagionPersist(st)
+    AI_Influence.StoreCard("aic_contagion", { v = 1, turns = {}, facts = {}, imp = {}, aliases = {}, trust = 0, cg = st })
+end
+function AI_Influence.ContagionAnnounce(st, text)
+    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "contagion", tostring(st.fac or ""), "", text, gameDay())
+    persistWorldEvents()
+    if AddUITriggeredEvent then
+        pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
+            title = "Health Advisory", body = text, sender = "Sector Health Authority", priority = "low" }) end)
+    end
+    log("CONTAGION " .. tostring(st.phase or "clear") .. ": " .. text)
+end
+-- #253: outbreak start - ONE code path shared by the natural roll and "sim outbreak"
+function AI_Influence.ContagionStart(secOverride, facOverride)
+    local st = (type(AI_Influence._contagion) == "table") and AI_Influence._contagion or {}
+    AI_Influence._contagion = st
+    local sec = tostring(secOverride or AI_Influence._lastPsector or "")
+    if sec == "" then log("contagion start: no grounded sector yet (talk to someone first)") return end
+    st.active = true
+    st.phase = "outbreak"
+    st.d0 = gameDay()
+    st.sector = sec
+    st.fac = tostring(facOverride or AI_Influence._lastPFaction or "argon")
+    AI_Influence.ContagionAnnounce(st, "A fast-moving pathogen has broken out aboard stations in " .. sec .. ". Authorities are mobilizing quarantine measures.")
+    AI_Influence.MintContract("job=cg_" .. tostring(gameDay()) .. "|faction=" .. st.fac .. "|reward=180000|verb=patrol|sector=" .. sec
+        .. "|title=Quarantine Support Patrol|summary=Patrol the quarantine perimeter in " .. sec .. " while relief convoys move in.")
+    AI_Influence.ContagionPersist(st)
+end
+function AI_Influence.ContagionTick()
+    local st = AI_Influence._contagion
+    if st == nil then
+        AI_Influence._contagion = false
+        AI_Influence.LoadCard("aic_contagion", function(card)
+            AI_Influence._contagion = (type(card) == "table" and type(card.cg) == "table") and card.cg or {}
+            log("contagion state hydrated active=" .. tostring(AI_Influence._contagion.active == true))
+        end)
+        return
+    end
+    if st == false then return end
+    local today = gameDay()
+    if st.active then
+        local age = today - (tonumber(st.d0) or today)
+        if st.phase == "outbreak" and age >= 2 then
+            st.phase = "peak"
+            AI_Influence.ContagionAnnounce(st, "The outbreak in " .. tostring(st.sector) .. " has reached its peak; medical services are overwhelmed and dock delays mount.")
+        elseif st.phase == "peak" and age >= 4 then
+            st.phase = "contained"
+            AI_Influence.ContagionAnnounce(st, "Quarantine efforts in " .. tostring(st.sector) .. " are taking hold; the outbreak is contained.")
+        elseif st.phase == "contained" and age >= 6 then
+            st.active = false
+            st.phase = "clear"
+            AI_Influence.ContagionAnnounce(st, "Health authorities declare " .. tostring(st.sector) .. " clear. Traffic restrictions lifted.")
+        end
+        AI_Influence.ContagionPersist(st)
+        return
+    end
+    -- no active outbreak: rare deterministic start roll (~1-in-40 hour-ticks), near the player
+    AI_Influence._cgTicks = (AI_Influence._cgTicks or 0) + 1
+    local sec = tostring(AI_Influence._lastPsector or "")
+    local h = 5381
+    local seedstr = "cg|" .. tostring(today) .. "|" .. tostring(AI_Influence._cgTicks)
+    for i = 1, #seedstr do h = (h * 33 + string.byte(seedstr, i)) % 4294967296 end
+    if h % 40 ~= 0 then return end
+    -- #256: the outbreak ignites ANYWHERE - MD picks a random civilized station galaxy-wide and
+    -- answers on AIChat.contagion_at; the player-local start remains only as the no-MD fallback.
+    if AddUITriggeredEvent then
+        pcall(function() AddUITriggeredEvent("ai_influence", "contagion_seek", {}) end)
+        log("contagion seek dispatched (galaxy-wide placement)")
+    else
+        AI_Influence.ContagionStart(sec)
+    end
 end
 
 -- RH-1: build the wheel-suggestions event table {n, l1.., t1..} from reply-piggybacked topics
@@ -1400,6 +2090,8 @@ function AI_Influence.P2SelfTest()
     check("obit_gate_named", AI_Influence.ObituaryEligible("Resolute", 1000, 0) == true)
     check("obit_gate_unnamed", AI_Influence.ObituaryEligible("", 1000, 0) == false)
     check("obit_gate_cooldown", AI_Influence.ObituaryEligible("Resolute", 100, 0) == false)   -- 100s < 300s cooldown
+    check("obit_gate_unknown_crew", AI_Influence.ObituaryEligible("Resolute", 1000, 0, false) == false)   -- #239 interaction gate
+    check("obit_gate_known_crew", AI_Influence.ObituaryEligible("Resolute", 1000, 0, true) == true)
     -- #212 world-events ledger
     local ev = {}
     ev = AI_Influence.AddWorldEvent(ev, "war", "Argon Federation", "Teladi Company", "war", 3)
@@ -1413,6 +2105,12 @@ function AI_Influence.P2SelfTest()
     check("worldev_gate_common", #AI_Influence.WorldEventLines(ev, 5) == 1)   -- no viewer: crises hidden, wars visible
     for i = 1, 40 do ev = AI_Influence.AddWorldEvent(ev, "shift", "A" .. i, "B" .. i, "friendly", i) end
     check("worldev_cap", #ev == 30)
+    -- U2 (#240) generated-event spread eligibility
+    local dv = {}
+    dv = AI_Influence.AddWorldEvent(dv, "dyn_political", "teladi", "", "Teladi tariff scandal rocks the Profit Guild", 5, { i = 5, ap = "all" })
+    dv = AI_Influence.AddWorldEvent(dv, "dyn_military", "argon", "", "Argon Third Fleet mobilizes to the frontier", 5, { i = 9 })
+    check("dynev_gate_involved", #AI_Influence.WorldEventLines(dv, 5, { psector = "X", faction = "teladi", role = "manager" }) == 2)
+    check("dynev_gate_uninvolved", #AI_Influence.WorldEventLines(dv, 5, { psector = "X", faction = "split", role = "crew" }) == 1)
     check("worldev_topk", #AI_Influence.WorldEventLines(ev, 5) == 5)
     check("worldev_empty", #AI_Influence.WorldEventLines({}, 5) == 0)
     -- #213 persona self-generation
@@ -1613,7 +2311,7 @@ end
 -- P1 proof scaffolding: flip true to re-arm the load-time probes (2 Player2 calls per game load).
 local P1_LOAD_PROBES = false
 -- P2 selftest: zero Player2 calls (pure Lua) — cheap enough to run on every load; flip off after #194.
-local P2_PROBES = false  -- #226 semantic recall: verified in-game pass=93 fail=0
+local P2_PROBES = false  -- #228-#244 batch verified in-game 2026-07-22: pass=97 fail=0, sweep clean
 -- #226 rig PROVEN 2026-07-22: "semantic recall n=4 embedded_new=4" -> the NPC answered with the exact
 -- seeded promise ("You promised to deliver 500 energy cells") via Player2 /v1/embeddings + our transport.
 local RECALL_PROBE = false
@@ -1905,41 +2603,10 @@ function AI_Influence.BlackboardProbe(ctx)
     if not okp then log("bbprobe failed (guarded)") end
 end
 
--- ---- ME-wheel suggestions: ask the bridge for short contextual openers, hand them to MD ------
--- MD raises "AIChat.suggest" with "faction_id=..|target_name=..|save_id=.." on conversation start
--- (pre-fetch). We GET /api/suggest and, when it returns ~4s later, push the {label,line} list back
--- to MD via AddUITriggeredEvent so the conversation wheel can build its choices.
-function AI_Influence.RequestSuggestions(param)
-    if not AI_Influence.BRIDGE_ENABLED then return end  -- ADR-009 bridge gate
-    local req = newRequest("GET")
-    if not req then return end
-    local ctx = {}
-    for pair in string.gmatch(tostring(param or ""), "([^|]+)") do
-        local eq = string.find(pair, "=")
-        if eq then ctx[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1) end
-    end
-    local function enc(s) return (string.gsub(tostring(s or ""), "[^%w%-_%.]", function(c)
-        return string.format("%%%02X", string.byte(c)) end)) end
-    req:setUrl(BRIDGE_URL .. "/api/suggest?save_id=" .. enc(ctx.save_id)
-        .. "&faction_id=" .. enc(ctx.faction_id) .. "&npc_name=" .. enc(ctx.target_name))
-    log("suggest GET npc=" .. tostring(ctx.target_name))
-    req:send(function(resp, err)
-        if err then return end
-        local status = (resp and resp.getStatus) and resp:getStatus() or 0
-        if status ~= 200 then return end
-        local content = resp:getJson()
-        local s = content and content.suggestions
-        if type(s) ~= "table" then return end
-        local out = { n = #s }
-        for i = 1, #s do out["l" .. i] = s[i].label or ""; out["t" .. i] = s[i].line or "" end
-        log("suggest <= " .. tostring(#s) .. " options")
-        AddUITriggeredEvent("ai_influence", "suggestions", out)
-    end)
-end
-
--- P1 (#113): fetch suggestions as a {label,line} LIST for the chat WINDOW's choice buttons. The MD
--- native wheel uses RequestSuggestions (AddUITriggeredEvent → On_suggestions); the window needs the
--- list directly via a callback. Same GET, conversation-aware server-side (#112).
+-- #228c: the bridge-era native-wheel suggest lane (GET /api/suggest -> UI event 'suggestions'
+-- -> MD listener) is REMOVED - the overlay owns live choices fed from each structured reply's
+-- topics, and the MD listener no longer exists. FetchSuggestions below stays as the guarded
+-- bridge-fallback for the window's own callback path.
 function AI_Influence.FetchSuggestions(faction_id, target_name, save_id, cb)
     if not AI_Influence.BRIDGE_ENABLED then return end  -- ADR-009 bridge gate
     local req = newRequest("GET")
@@ -1962,8 +2629,6 @@ function AI_Influence.FetchSuggestions(faction_id, target_name, save_id, cb)
         if cb then pcall(cb, list) end
     end)
 end
-
-local function onRequestSuggest(_, param) AI_Influence.RequestSuggestions(param) end
 
 -- ---- world-model write-back: report a relation the dispatcher just changed in-game --------------
 -- MD On_action raises "AIChat.relation_report" with "subject=..|object=..|relation=..|save_id=..".
@@ -2950,15 +3615,6 @@ local function handleUpdates(success, updates)
                 if menu.active and menu.display then menu.display() end
                 -- P1 (#113): refresh the choice buttons from the now-extended conversation (the loop).
                 if menu.requestSuggestions then menu.requestSuggestions() end
-                -- C2 v2 regression fix (Ken 2026-07-05): the NATIVE wheel's labels must stay contextual
-                -- too — re-request the batch on EVERY reply so MD State ($l1..$t3) carries conversation-
-                -- aware lines for the next wheel render (was: refreshed only on Speak_menu open).
-                if AI_Influence.RequestSuggestions and menu.currentContext then
-                    pcall(AI_Influence.RequestSuggestions,
-                          "faction_id=" .. tostring(menu.currentContext.faction or "")
-                          .. "|target_name=" .. tostring(menu.currentContext.target or "")
-                          .. "|save_id=" .. tostring(menu.currentContext.save_id or ""))
-                end
             end
         end
 
@@ -3069,9 +3725,17 @@ onOpenCommLink = function(_, params)
         -- Reset the VISIBLE transcript when the conversation partner CHANGES. Bridge memory stays isolated
         -- per NPC (separate npc_key), and the new NPC's recall still rides via the LLM — this only clears
         -- the on-screen history. Same-NPC re-entry keeps its transcript.
+        -- #257: ground last-known sector/faction at conversation OPEN (was: first completed turn) -
+        -- "sim outbreak" and the outbreak fallback need it before any exchange has happened
+        AI_Influence._lastPsector = tostring(context["psector"] or context["$psector"] or AI_Influence._lastPsector or "")
+        AI_Influence._lastPFaction = tostring(context["faction_id"] or context["$faction_id"] or AI_Influence._lastPFaction or "argon")
         local _newTarget = context["target_name"] or context["$target_name"] or "Faction Officer"
         if (not termMenu.currentContext) or termMenu.currentContext.target ~= _newTarget then
             termMenu.history = {}
+            -- #228: suggestions reset only on a PARTNER CHANGE too — Speak_menu re-fires Open_chat on
+            -- every section return (e.g. Back from typing), and wiping live topics there would demote
+            -- the plate to presets mid-conversation.
+            termMenu.suggestions = {}
         end
         termMenu.currentContext = {
             faction = context["faction_id"] or context["$faction_id"] or "argon",
@@ -3084,7 +3748,6 @@ onOpenCommLink = function(_, params)
         -- P1 (#113): a fresh conversation starts in CHOICE mode (not typing); presets show instantly and
         -- the LLM batch arrives via FetchSuggestions. Reset per open so a new NPC doesn't inherit stale choices.
         termMenu.typing = false
-        termMenu.suggestions = {}
         if termMenu.requestSuggestions then termMenu.requestSuggestions() end
         -- ME-wheel opener: if the player picked a suggested line, queue it to auto-send once the
         -- window is active (the poll tick does the send, so it waits for the engine to open it).
@@ -3134,7 +3797,88 @@ local function init()
     RegisterEvent("AIChat.open", onOpenCommLink)
     RegisterEvent("AIChat.direct_probe", function(_, param) AI_Influence.DirectProbe(param) end)
     RegisterEvent("AIChat.backend_config", onBackendConfig)
-    RegisterEvent("AIChat.initiative_tick", function() pcall(AI_Influence.InitiativePass) end)
+    RegisterEvent("AIChat.initiative_tick", function()
+        pcall(AI_Influence.InitiativePass)
+        pcall(AI_Influence.DynEventTick)   -- U4a: dynamic-event cadence rides the same 10-min tick
+        pcall(AI_Influence.ContagionTick)  -- doc-04a: the epidemic clock rides it too
+    end)
+    -- U-D4a: transfer settlement - MD verified (or refused) the actual money move
+    RegisterEvent("AIChat.intel_delivered", function(_, nWares)
+        local pt = AI_Influence._lastPaid
+        if not pt then return end
+        AI_Influence.LoadCard(pt.token, function(card)
+            card = (type(card) == "table") and card or newCard()
+            AI_Influence.AddCardFact(card, "delivered a real trade ledger dossier (" .. tostring(nWares) .. " wares) to the player's logbook", "npc_claim", 12, "promise")
+            AI_Influence.StoreCard(pt.token, card)
+        end)
+        local tm3 = rawget(_G, "X4_Terminal_Menu")
+        if tm3 and tm3.currentContext and tostring(tm3.currentContext.target) == tostring(pt.target) then
+            tm3.history = tm3.history or {}
+            table.insert(tm3.history, { role = "assistant", text = "[Dossier delivered: see Logbook > General - " .. tostring(nWares) .. " wares, live stock vs demand.]", err = true })
+            if tm3.active and tm3.display then tm3.display() end
+        end
+        log("intel delivered nWares=" .. tostring(nWares))
+    end)
+    RegisterEvent("AIChat.diplo_analyze", function(_, param) pcall(AI_Influence.DiploAnalyze, param) end)
+    -- #259: peace withdraws the pair's war-effort contract (MD raise -> the proven withdraw wire)
+    RegisterEvent("AIChat.contract_withdraw_shim", function(_, job)
+        if AddUITriggeredEvent and job and tostring(job) ~= "" then
+            pcall(function() AddUITriggeredEvent("ai_influence", "contract_withdraw", { job_id = tostring(job) }) end)
+            log("contract withdraw dispatched (peace) job=" .. tostring(job))
+        end
+    end)
+    -- #256: MD answers the outbreak-placement seek with a real station's sector + owner id
+    RegisterEvent("AIChat.contagion_at", function(_, param)
+        local g = AI_Influence.parseBackendConfig(param)
+        if g and g.sector then pcall(AI_Influence.ContagionStart, g.sector, g.faction) end
+    end)
+    -- #243: MD pushes the persisted toggles on every load; the chat-box commands persist back
+    RegisterEvent("AIChat.toggles_config", function(_, param)
+        local g = AI_Influence.parseBackendConfig(param)
+        if g then
+            AI_Influence.DND_ENABLED = (tostring(g.dnd) ~= "0")
+            AI_Influence.OBITS_ENABLED = (tostring(g.obits) ~= "0")
+            log("toggles applied dnd=" .. tostring(AI_Influence.DND_ENABLED) .. " obits=" .. tostring(AI_Influence.OBITS_ENABLED))
+        end
+    end)
+    RegisterEvent("AIChat.transfer_done", function()
+        local pt = AI_Influence._pendingTransfer; AI_Influence._pendingTransfer = nil
+        if not pt then return end
+        AI_Influence._lastPaid = pt
+        AI_Influence._settled = AI_Influence._settled or {}
+        AI_Influence._settled[pt.token .. "|" .. pt.amt .. "|" .. pt.why] = true
+        if AI_Influence._session and AI_Influence._session.token == pt.token then
+            AI_Influence._session.paid = (AI_Influence._session.paid or 0) + (tonumber(pt.amt) or 0)
+        end
+        AI_Influence.LoadCard(pt.token, function(card)
+            card = (type(card) == "table") and card or newCard()
+            AI_Influence.AddCardFact(card, "received a confirmed payment of " .. pt.amt .. " credits from the player for " .. pt.why, "npc_claim", 15, "promise")
+            AI_Influence.StoreCard(pt.token, card)
+        end)
+        local tm2 = rawget(_G, "X4_Terminal_Menu")
+        if tm2 and tm2.currentContext and tostring(tm2.currentContext.target) == tostring(pt.target) then
+            tm2.history = tm2.history or {}
+            table.insert(tm2.history, { role = "assistant", text = "[Transfer complete: " .. pt.amt .. " Cr paid.]", err = true })
+            if tm2.active and tm2.display then tm2.display() end
+        end
+        log("transfer done amt=" .. tostring(pt.amt))
+    end)
+    RegisterEvent("AIChat.transfer_failed", function()
+        local pt = AI_Influence._pendingTransfer; AI_Influence._pendingTransfer = nil
+        if not pt then return end
+        AI_Influence.LoadCard(pt.token, function(card)
+            card = (type(card) == "table") and card or newCard()
+            AI_Influence.AddCardFact(card, "the player agreed to pay " .. pt.amt .. " credits but could not cover it", "npc_claim", 12, "relationship")
+            AI_Influence.StoreCard(pt.token, card)
+        end)
+        local tm2 = rawget(_G, "X4_Terminal_Menu")
+        if tm2 and tm2.currentContext and tostring(tm2.currentContext.target) == tostring(pt.target) then
+            tm2.history = tm2.history or {}
+            table.insert(tm2.history, { role = "assistant", text = "[Transfer FAILED - you could not cover " .. pt.amt .. " Cr. They will remember that.]", err = true })
+            if tm2.active and tm2.display then tm2.display() end
+        end
+        log("transfer failed (insufficient funds) amt=" .. tostring(pt.amt))
+    end)
     RegisterEvent("AIChat.ship_lost", function(_, param) pcall(AI_Influence.OnShipLost, param) end)
     RegisterEvent("AIChat.world_event", function(_, param) pcall(AI_Influence.OnWorldEvent, param) end)
     RegisterEvent("AIChat.diplo_statement", function(_, param) pcall(AI_Influence.OnDiploStatement, param) end)
@@ -3150,10 +3894,25 @@ local function init()
     RegisterEvent("AIChat.close", function()
         local m = rawget(_G, "X4_Terminal_Menu")
         if m and m.active and m.closeMenu then pcall(m.closeMenu) end
+        -- #247 (M4): flush the episode - day/place/what-happened, built from ENGINE facts only.
+        -- Category "relationship" promotes it to imp => it also enters SEMANTIC RECALL (RoleRAG).
+        local ss = AI_Influence._session
+        AI_Influence._session = nil
+        if ss and ss.turns >= 2 then
+            local line = "[episode] Day " .. tostring(gameDay())
+                .. (ss.sector ~= "" and (" at " .. ss.sector) or "") .. ": " .. tostring(ss.turns) .. " exchanges"
+            if (ss.paid or 0) > 0 then line = line .. "; the player paid " .. tostring(ss.paid) .. " credits" end
+            if #ss.checks > 0 then line = line .. "; attempts: " .. table.concat(ss.checks, ", ") end
+            AI_Influence.LoadCard(ss.token, function(card)
+                card = (type(card) == "table") and card or newCard()
+                AI_Influence.AddCardFact(card, line, "npc_claim", 7, "relationship")
+                AI_Influence.StoreCard(ss.token, card)
+                log("EPISODE written: " .. line)
+            end)
+        end
     end)
     RegisterEvent("AIChat.poll", onPollTick)
     RegisterEvent("AIChat.index_npcs", onIndexNpcs)
-    RegisterEvent("AIChat.suggest", onRequestSuggest)
     RegisterEvent("AIChat.relation_report", onReportRelation)
     RegisterEvent("AIChat.mint_contract", onMintContract)
     RegisterEvent("AIChat.hostile_event", onReportHostile)
@@ -3166,6 +3925,8 @@ local function init()
     RegisterEvent("AIChat.contract_aborted", onContractAborted)
     RegisterEvent("AIChat.contract_completed", onContractCompleted)
     RegisterEvent("AIChat.build_placed", onBuildPlaced)
-    log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.suggest, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")
+    log("events registered: AIChat.open, AIChat.poll, AIChat.index_npcs, AIChat.relation_report, AIChat.sync_relations, AIChat.npc_skills")
+    -- ARMED (#228-#244 batch): the pure-Lua selftest runs once per UI load while armed; strip after proof
+    if P2_PROBES then pcall(AI_Influence.P2SelfTest) end
 end
 init()

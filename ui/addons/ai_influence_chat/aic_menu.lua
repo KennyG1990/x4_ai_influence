@@ -42,6 +42,21 @@ local menu = X4_Terminal_Menu
 
 local function log(m) if DebugError then DebugError("[AICHAT][MENU] " .. tostring(m)) end end
 
+-- U-D1b: X4's UI font renders exotic punctuation as boxes - fold LLM text to ASCII for display.
+-- Escape-proof construction (string.char): literal multi-byte escapes get mangled in transit.
+local function asciiClean(s)
+    s = tostring(s or "")
+    local E = string.char(226, 128)
+    s = s:gsub(E .. string.char(148), " - ")            -- em dash
+    s = s:gsub(E .. string.char(147), "-")              -- en dash
+    s = s:gsub(E .. string.char(166), "...")            -- ellipsis
+    s = s:gsub(E .. string.char(152), "'"):gsub(E .. string.char(153), "'")
+    s = s:gsub(E .. string.char(156), string.char(34)):gsub(E .. string.char(157), string.char(34))
+    s = s:gsub(E .. string.char(175), " "):gsub(E .. string.char(137), " "):gsub(E .. string.char(130), " ")
+    s = s:gsub(string.char(194, 160), " ")              -- no-break space
+    return s
+end
+
 -- Idempotent + DEFERRED registration. Completes the engine registration (which OpenMenu needs) the
 -- moment Helper is available. Called from the poll tick / open path, by which time Helper exists.
 function menu.ensureRegistered()
@@ -109,6 +124,9 @@ end
 function menu.requestSuggestions()
     local bridge = rawget(_G, "AI_Influence")
     if not (bridge and bridge.FetchSuggestions) then return end
+    -- #228: serverless topics ride EACH reply (SendDirectChat hands them to menu.suggestions
+    -- directly) - the bridge-era GET below would just time out against a dead endpoint.
+    if bridge.SendDirectChat then return end
     local ctx = menu.currentContext or {}
     pcall(function()
         bridge.FetchSuggestions(ctx.faction, ctx.target, ctx.save_id, function(list)
@@ -118,15 +136,6 @@ function menu.requestSuggestions()
             end
         end)
     end)
-end
-
-function menu.pickChoice(i)
-    local choices = menu.currentChoices()
-    local c = choices and choices[i]
-    if not (c and c.line and c.line ~= "") then return end
-    menu.suggestions = {}          -- show presets while the NPC "thinks"; handleUpdates refetches after the reply
-    menu.onInput(c.line)           -- send the chosen line (same path as a typed message)
-    -- NO fetch here: the single refresh happens after the NPC reply (aic_uix handleUpdates) — one fetch/turn.
 end
 
 function menu.startTyping()
@@ -219,6 +228,7 @@ function menu.display()
     local npcColor = NPC_ORANGE
     if menu.npcState == "scared" then npcColor = Color["text_warning"]
     elseif menu.npcState == "aggressive" then npcColor = Color["text_error"] end
+    if lastNpcErr then npcColor = Color["text_inactive"] end   -- #228c: transport errors are STATUS, not NPC speech
     -- Name row carries the ONE persistent control: END (full exit). Everything else is pure output
     -- (Ken 2026-07-05: "the chat window is strictly for visual output").
     local row = ht:addRow(true, {})
@@ -228,20 +238,24 @@ function menu.display()
     row[3].handlers.onClick = function() menu.closeMenu() end
     -- ME framing: normally show only the NPC's latest line. While they're "thinking" (your line is
     -- newer than their last reply), show YOUR pending line dimmed so the wait reads as intentional.
-    local lastNpc, lastYou
+    local lastNpc, lastYou, lastNpcErr, lastUser
     local hist = menu.history or {}
     for i = #hist, 1, -1 do
         local it = hist[i]
         if it.role == "user" then
+            if not lastUser then lastUser = it.text end
             if not lastNpc and not lastYou then lastYou = it.text end
         elseif not lastNpc then
             lastNpc = it.text
-            break
+            lastNpcErr = it.err
         end
+        if lastUser and lastNpc then break end
     end
-    if lastYou then
+    -- Ken 2026-07-22: ALWAYS show the player's last line above the reply (was: only while the NPC
+    -- was "thinking") - the plate carries the full exchange, not just the NPC's half.
+    if lastUser then
         row = ht:addRow(false, {})
-        row[1]:setColSpan(3):createText("You:  " .. tostring(lastYou), { wordwrap = true, color = PLAYER_GREEN })
+        row[1]:setColSpan(3):createText("You:  " .. tostring(lastUser), { wordwrap = true, color = PLAYER_GREEN })
     end
     -- ME-style two-voice rendering (Ken 2026-07-05): *asterisk* spans are STAGE DIRECTION — italic,
     -- muted lavender (the Player2-app look); everything else is SPEECH in the target's orange.
@@ -276,6 +290,41 @@ function menu.display()
         row[1]:setColSpan(3):createText(reply, { wordwrap = true, color = npcColor })
     end
 
+    -- U-D5 (#244): next-turn confidence bands, dimmed (semi-transparent UI mode from the docs)
+    if menu.lastOdds and not menu.typing then
+        row = ht:addRow(false, {})
+        row[1]:setColSpan(3):createText("Read:  " .. tostring(menu.lastOdds), { color = Color["text_inactive"] })
+    end
+    -- U-D1: the dice are VISIBLE (D&D feel) - last check readout, dimmed, not NPC speech
+    if menu.lastCheck then
+        local ck = menu.lastCheck
+        row = ht:addRow(false, {})
+        row[1]:setColSpan(3):createText(string.upper(tostring(ck.intent)) .. " CHECK: " .. tostring(ck.chance) .. "% vs roll " .. tostring(ck.roll) .. " = " .. tostring(ck.tier),
+                                        { color = Color["text_inactive"] })
+    end
+
+    -- #228: LIVE choices IN the plate - the overlay owns them, refreshed from each reply's topics,
+    -- so what you can pick always follows what was just said (the native wheel keeps stable slots).
+    -- While the NPC "thinks" (lastYou pending) the block is a dimmed ellipsis: nothing stale to pick.
+    -- #228c (review): while COMPOSING (typing dock up) the block is suppressed - the dock docks at a
+    -- fixed y and the button rows would physically overlap it.
+    if menu.typing then
+        -- composing: no choice block
+    elseif lastYou then
+        row = ht:addRow(false, {})
+        row[1]:setColSpan(3):createText(". . .", { color = Color["text_inactive"] })
+    else
+        local choices = menu.currentChoices()
+        for ci = 1, math.min(3, #choices) do
+            local c = choices[ci]
+            if c and c.line and c.line ~= "" then
+                row = ht:addRow(true, {})
+                row[1]:setColSpan(3):createButton({ active = true }):setText(tostring(ci) .. ".  " .. asciiClean(c.label), { halign = "left" })
+                row[1].handlers.onClick = function() menu.onInput(c.line) end   -- #228c: no wipe - a failed turn keeps the live topics
+            end
+        end
+    end
+
     -- INPUT ON DEMAND, IN PLACE (Ken 2026-07-05): pressing wheel option 4 makes its label give way —
     -- the input box materializes AT the option-4 slot (right arc, wheel height) via AIChat.starttyping
     -- → startTyping(). Sending (Enter or SEND) dismisses it back to pure output.
@@ -296,10 +345,10 @@ function menu.display()
         row[1].handlers.onTextChanged = function(_, text, textchanged) if textchanged and text ~= nil then menu.editboxText = text end end
         row[1].handlers.onEditBoxDeactivated = function(_, text, textchanged, isconfirmed)
             if textchanged and text ~= nil then menu.editboxText = text end
-            if isconfirmed then menu.typing = false; menu.suggestions = {}; menu.onInput(text) end
+            if isconfirmed then menu.typing = false; menu.onInput(text) end
         end
         row[2]:createButton({ active = true }):setText("SEND", { halign = "center" })
-        row[2].handlers.onClick = function() menu.typing = false; menu.suggestions = {}; menu.onInput(menu.editboxText) end
+        row[2].handlers.onClick = function() menu.typing = false; menu.onInput(menu.editboxText) end
     end
 
     frame:display()
@@ -313,6 +362,77 @@ function menu.onInput(text)
     text = string.gsub(text, "%s+$", "")
     if text == "" then return end
 
+    -- #253: SIM commands - instant test triggers for the time-gated systems (Ken: "speed this up").
+    -- sim event [military|political|economic|social|anomalous] | sim outbreak | sim tick | sim drop
+    do
+        local low = string.lower(text)
+        if low:sub(1, 4) == "sim " or low:sub(1, 5) == "/sim " or low == "sim" then
+            local arg = low:gsub("^/?sim%s*", "")
+            local br = rawget(_G, "AI_Influence")
+            local note = "[sim commands: 'sim event <type>' generate a galaxy event now | 'sim outbreak' start a contagion here | 'sim drop' force an informant/initiative pass | 'sim tick' advance the generator cadence]"
+            if br and arg ~= "" then
+                if arg:sub(1, 5) == "event" then
+                    local ty = arg:match("^event%s+(%a+)") or "political"
+                    if br.DynEventGenerate then
+                        pcall(br.DynEventGenerate, ty)
+                        note = "[sim: generating a '" .. ty .. "' galaxy event - watch inbox/logbook/debuglog]"
+                    end
+                elseif arg == "outbreak" then
+                    if br.ContagionStart then
+                        pcall(br.ContagionStart)
+                        note = "[sim: outbreak starting in your last grounded sector - Health Advisory + relief contract incoming]"
+                    end
+                elseif arg == "drop" then
+                    if br.InitiativePass then
+                        pcall(br.InitiativePass)
+                        note = "[sim: initiative pass forced - bonded friends / informants may reach out (needs a qualifying NPC)]"
+                    end
+                elseif arg == "persona" then
+                    br._remintNext = true
+                    note = "[sim: identity cleared - their NEXT reply re-mints persona/backstory/quirks with the corrected role]"
+                elseif arg == "tick" then
+                    br._dynTicks = ((br._dynTicks or 0) - ((br._dynTicks or 0) % 18)) + 17
+                    note = "[sim: generator cadence advanced - the next 10-min tick fires an event]"
+                end
+            end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = note, err = true })
+            menu.editboxText = ""
+            if menu.active and menu.display then menu.display() end
+            return
+        end
+    end
+    -- doc-08 (#239): obituary opt-out typed straight into the chat box ("obits off" / "obits on")
+    do
+        local low = string.lower(text)
+        if low == "obits off" or low == "/obits off" or low == "obits on" or low == "/obits on" then
+            local br = rawget(_G, "AI_Influence")
+            local on = (string.sub(low, -3) == " on")
+            if br then br.OBITS_ENABLED = on end
+            if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "toggles_persist", { obits = on and 1 or 0 }) end) end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[Ship life-stories " .. (on and "ENABLED" or "DISABLED") .. ".]", err = true })
+            menu.editboxText = ""
+            if menu.active and menu.display then menu.display() end
+            return
+        end
+    end
+    -- U-D1: dice-layer toggle typed straight into the chat box ("dnd off" / "dnd on")
+    do
+        local low = string.lower(text)
+        if low == "dnd off" or low == "/dnd off" or low == "dnd on" or low == "/dnd on" then
+            local br = rawget(_G, "AI_Influence")
+            local on = (string.sub(low, -3) == " on")
+            if br then br.DND_ENABLED = on end
+            if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "toggles_persist", { dnd = on and 1 or 0 }) end) end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[Dice checks " .. (on and "ENABLED" or "DISABLED") .. ".]", err = true })
+            menu.editboxText = ""
+            if menu.active and menu.display then menu.display() end
+            return
+        end
+    end
+
     -- Confirm gate: if an influence action is pending (held by aic_uix.handleUpdates), a
     -- 'yes'/'confirm' DISPATCHES it; anything else declines and is sent as a normal chat turn.
     if menu._pendingAction then
@@ -325,7 +445,7 @@ function menu.onInput(text)
             table.insert(menu.history, { role = "assistant", text = "[Confirmed] Dispatching." })
             menu.editboxText = ""
             if menu.active and menu.display then menu.display() end
-            if AddUITriggeredEvent then AddUITriggeredEvent("ai_influence", "action", pending) end
+            if AddUITriggeredEvent then AddUITriggeredEvent("ai_influence", pending.control or "action", pending) end
             return
         else
             menu.history = menu.history or {}
@@ -334,6 +454,13 @@ function menu.onInput(text)
         end
     end
 
+    -- #228c (review): ONE turn in flight at a time - a concurrent send races LoadCard/StoreCard
+    -- on the same card (last writer wins; an exchange would vanish from NPC memory) and desyncs
+    -- the transcript. Refuse quietly until the pending reply lands (failure replies also land).
+    do
+        local hist = menu.history or {}
+        if #hist > 0 and hist[#hist].role == "user" then log("send refused: turn in flight") return end
+    end
     log("SEND: " .. text)
     menu.history = menu.history or {}
     table.insert(menu.history, { role = "user", text = text })
@@ -350,6 +477,7 @@ function menu.onInput(text)
     -- lane below is preserved as the fallback while the migration completes.
     if bridge.SendDirectChat then
         local fc = menu.currentContext.full_context or {}
+        local sentTarget = menu.currentContext.target   -- #228c: a reply belongs to the conversation it was sent in
         bridge.SendDirectChat({
             target = menu.currentContext.target,
             faction = menu.currentContext.faction,
@@ -360,9 +488,17 @@ function menu.onInput(text)
             traffic = fc.traffic,     -- #216 live sector ship-traffic count
             npc_owned = fc.npc_owned, -- #217 owned-captain flag (gates conversational orders)
             npc_ship = fc.npc_ship,   -- #217 ship name for the order acknowledgement
+            pmoney = fc.pmoney,       -- U-D2: REAL wallet (credits) -> Credit Leverage
+            pfleet = fc.pfleet,       -- U-D2: player fight ships in this sector -> Resolve
         }, text, function(ok, reply)
+            -- #228c (review): if the player moved on to another NPC while this was in flight, drop
+            -- the UI write - the card write upstream is token-correct and unaffected.
+            if tostring(menu.currentContext and menu.currentContext.target) ~= tostring(sentTarget) then
+                log("late reply dropped (partner changed since send)")
+                return
+            end
             menu.history = menu.history or {}
-            table.insert(menu.history, { role = "assistant", text = tostring(reply) })
+            table.insert(menu.history, { role = "assistant", text = asciiClean(reply), err = (not ok) or nil })
             if menu.active and menu.display then menu.display() end
             log(ok and ("direct chat reply len=" .. tostring(#tostring(reply))) or ("direct chat FAILED: " .. tostring(reply)))
         end)
@@ -384,7 +520,15 @@ function menu.onInput(text)
     end)
 end
 
+-- #230b: vanilla helper routes ESC/hide to menu.onCloseElement - we never defined it (nil-call
+-- error in helper.xpl onHide). Standard behavior: close the overlay (closeMenu is guarded-safe).
+function menu.onCloseElement()
+    menu.closeMenu()
+end
+
 function menu.cleanup()
+    menu.lastOdds = nil
+    menu.lastCheck = nil
     menu.frame = nil
     menu.active = false
     menu.typing = false      -- lifecycle nesting (Ken): input NEVER outlives the window
@@ -393,7 +537,12 @@ end
 
 function menu.closeMenu()
     refreshHelper()
-    if Helper and Helper.closeMenuAndReturn then Helper.closeMenuAndReturn(menu) end
+    -- #228d (Ken's stuck wheel): closeMenuAndReturn on a menu that is NOT open pops whatever menu
+    -- IS open - during a conversation start that ate the NATIVE conversation menu and stranded a
+    -- choice-less wheel hub. Close the engine menu only when the overlay is actually open.
+    if menu.active and menu.frame and Helper and Helper.closeMenuAndReturn then
+        pcall(Helper.closeMenuAndReturn, menu)
+    end
     menu.cleanup()
 end
 

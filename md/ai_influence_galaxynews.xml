@@ -139,6 +139,45 @@
                   <do_if value="$bucket == 'war' or $bucket == 'hostile'">
                     <set_value name="$hotpairs" exact="$hotpairs + $fa + '~' + $fb + '=' + $bucket + ';'"/>
                   </do_if>
+                  <!-- #256: WAR-FRONT SAMPLER - the universe engages ITSELF. Per WAR pair each pulse:
+                       sample both sides' galaxy fight-fleet counts; 5+ losses since the last pulse
+                       become Front Report news + a combat ledger event (conversations + generator +
+                       diplomacy all see it). No player involvement anywhere in this lane. -->
+                  <do_if value="$bucket == 'war' and $fa != 'player' and $fb != 'player'">
+                    <find_ship_by_true_owner groupname="$WfA" faction="faction.{$fa}" space="player.galaxy" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
+                    <find_ship_by_true_owner groupname="$WfB" faction="faction.{$fb}" space="player.galaxy" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
+                    <set_value name="$ca" exact="if $WfA? then $WfA.count else 0"/>
+                    <set_value name="$cb" exact="if $WfB? then $WfB.count else 0"/>
+                    <set_value name="$ka" exact="'$wf_' + $fa + '_' + $fb + '_a'"/>
+                    <set_value name="$kb" exact="'$wf_' + $fa + '_' + $fb + '_b'"/>
+                    <do_if value="Galaxy_pulse.$Snap.{$ka}? and Galaxy_pulse.$Snap.{$kb}?">
+                      <set_value name="$da" exact="Galaxy_pulse.$Snap.{$ka} - $ca"/>
+                      <set_value name="$db" exact="Galaxy_pulse.$Snap.{$kb} - $cb"/>
+                      <!-- #267: fleet counts are GLOBAL per faction, so report each faction's losses
+                           ONCE per pulse (stamp-guarded), attributed neutrally to "its war fronts" -
+                           the per-pair winner-credit duplicated one loss across every enemy. -->
+                      <do_if value="$da ge 5">
+                        <set_value name="$wfs" exact="if Galaxy_pulse.$Snap.{'$wfd_' + $fa}? then Galaxy_pulse.$Snap.{'$wfd_' + $fa} else -1"/>
+                        <do_if value="$wfs != player.age">
+                          <set_value name="Galaxy_pulse.$Snap.{'$wfd_' + $fa}" exact="player.age"/>
+                          <write_to_logbook category="news" title="'Front Report'" text="faction.{$fa}.knownname + ' has lost ' + $da + ' warships across its war fronts since the last report.'"/>
+                          <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $fa + '|to=' + faction.{$fa}.knownname + ' lost ' + $da + ' warships in heavy fighting across its war fronts'"/>
+                          <debug_text text="'AIC WARFRONT ' + $fa + ' lost ' + $da" filter="general"/>
+                        </do_if>
+                      </do_if>
+                      <do_if value="$db ge 5">
+                        <set_value name="$wfs2" exact="if Galaxy_pulse.$Snap.{'$wfd_' + $fb}? then Galaxy_pulse.$Snap.{'$wfd_' + $fb} else -1"/>
+                        <do_if value="$wfs2 != player.age">
+                          <set_value name="Galaxy_pulse.$Snap.{'$wfd_' + $fb}" exact="player.age"/>
+                          <write_to_logbook category="news" title="'Front Report'" text="faction.{$fb}.knownname + ' has lost ' + $db + ' warships across its war fronts since the last report.'"/>
+                          <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $fb + '|to=' + faction.{$fb}.knownname + ' lost ' + $db + ' warships in heavy fighting across its war fronts'"/>
+                          <debug_text text="'AIC WARFRONT ' + $fb + ' lost ' + $db" filter="general"/>
+                        </do_if>
+                      </do_if>
+                    </do_if>
+                    <set_value name="Galaxy_pulse.$Snap.{$ka}" exact="$ca"/>
+                    <set_value name="Galaxy_pulse.$Snap.{$kb}" exact="$cb"/>
+                  </do_if>
                   <do_if value="not Galaxy_pulse.$Snap.{$key}?">
                     <!-- first sighting of this pair: seed silently (pre-existing wars get a fatigue clock too) -->
                     <set_value name="Galaxy_pulse.$Snap.{$key}" exact="$bucket"/>
@@ -169,6 +208,12 @@
                     <do_elseif value="$was == 'war'">
                       <write_to_logbook category="diplomacy" title="'Peace'" text="'The war between ' + $na + ' and ' + $nb + ' has ended; relations now ' + $bucket + '.'"/>
                       <signal_cue_instantly cue="md.ai_influence_diplomacy.Close_event" param="table[$a = $fa, $b = $fb]"/>
+                      <!-- #259: OPORD revive-or-retire verdict, the REVIVED half - peace WITHDRAWS the
+                           standing war-effort contract for this pair (job id is deterministic:
+                           war_fa_fb). Serverless raiser for the proven Withdraw_contract lane; the
+                           issuer gracefully clears un-accepted offers (accepted missions are never
+                           torn down - the #146-era guard). Task #14's withdraw path is live again. -->
+                      <raise_lua_event name="'AIChat.contract_withdraw_shim'" param="'war_' + $fa + '_' + $fb"/>
                     </do_elseif>
                     <do_else>
                       <write_to_logbook category="diplomacy" title="'Diplomatic Shift'" text="'Relations between ' + $na + ' and ' + $nb + ' shifted from ' + $was + ' to ' + $bucket + '.'"/>

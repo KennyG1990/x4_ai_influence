@@ -103,8 +103,13 @@
         <do_if value="md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.owner? and md.ai_influence_conversation.State.$current_npc.ship.owner == faction.player">
           <set_value name="$owned" exact="1"/>
         </do_if>
-        <debug_text text="'AIC grounding traffic=' + $traffic + ' sector=' + $psector + ' owned=' + $owned" filter="general"/>
-        <raise_lua_event name="'AIChat.open'" param="'faction_id=' + $faction + '|target_name=' + $target + '|save_id=' + $sid + '|npc_role=' + $nrole + '|npc_skill=' + $nskill + '|npc_ship=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.knownname? then md.ai_influence_conversation.State.$current_npc.ship.knownname else '') + '|npc_fleet=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.commander? and md.ai_influence_conversation.State.$current_npc.ship.commander.knownname? then md.ai_influence_conversation.State.$current_npc.ship.commander.knownname else '') + '|initial=' + $initial + '|standing=' + $standing + '|psector=' + $psector + '|nearby=' + $nearby + '|traffic=' + $traffic + '|npc_owned=' + $owned"/>
+        <!-- U-D2 (#232): REAL player power for the dice - actual wallet + player fight ships
+             present in THIS sector (find_ship_by_true_owner: the opord-proven pattern) -->
+        <set_value name="$pmoney" exact="player.money / 1Cr"/>
+        <find_ship_by_true_owner groupname="$PFleet" faction="faction.player" space="player.sector" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
+        <set_value name="$pfleet" exact="if $PFleet? then $PFleet.count else 0"/>
+        <debug_text text="'AIC grounding traffic=' + $traffic + ' sector=' + $psector + ' owned=' + $owned + ' pmoney=' + $pmoney + ' pfleet=' + $pfleet" filter="general"/>
+        <raise_lua_event name="'AIChat.open'" param="'faction_id=' + $faction + '|target_name=' + $target + '|save_id=' + $sid + '|npc_role=' + $nrole + '|npc_skill=' + $nskill + '|npc_ship=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.knownname? then md.ai_influence_conversation.State.$current_npc.ship.knownname else '') + '|npc_fleet=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.commander? and md.ai_influence_conversation.State.$current_npc.ship.commander.knownname? then md.ai_influence_conversation.State.$current_npc.ship.commander.knownname else '') + '|initial=' + $initial + '|standing=' + $standing + '|psector=' + $psector + '|nearby=' + $nearby + '|traffic=' + $traffic + '|npc_owned=' + $owned + '|pmoney=' + $pmoney + '|pfleet=' + $pfleet"/>
       </actions>
     </library>
     <cue name="Chat_boot" namespace="this">
@@ -129,6 +134,230 @@
           </actions>
         </cue>
       </cues>
+    </cue>
+    <cue name="Guard" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not Guard.$BlindEye?">
+          <set_value name="Guard.$BlindEye" exact="table[]"/>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="On_transfer" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'aic_transfer'"/>
+      </conditions>
+      <actions>
+        <!-- U-D4a (#230): conversation payments. The LLM only PROPOSES; the player CONFIRMED in the
+             overlay; HERE the engine checks the payer actually owns the credits before any move.
+             Nothing is ever minted from words alone (Ken's law). NPC-side wallets/wares: U-D4b,
+             grounded against reference mods before any new action is used. -->
+        <set_value name="$amt" exact="if event.param3.$credits? then event.param3.$credits else 0"/>
+        <set_value name="$paid" exact="false"/>
+        <do_if value="$amt gt 0 and $amt le 500000">
+          <do_if value="player.money ge ((1Cr) * $amt)">
+            <reward_player money="-((1Cr) * $amt)"/>
+            <show_notification text="'Payment sent: ' + $amt + ' Cr'"/>
+            <write_to_logbook category="general" title="'Conversation payment: ' + $amt + ' Cr'" text="'Paid in person - ' + (if event.param3.$why? then event.param3.$why else 'an agreed exchange')"/>
+            <raise_lua_event name="'AIChat.transfer_done'"/>
+            <set_value name="$paid" exact="true"/>
+            <debug_text text="'AIC TRANSFER paid ' + $amt + ' Cr'" filter="general"/>
+          </do_if>
+          <do_else>
+            <raise_lua_event name="'AIChat.transfer_failed'"/>
+            <debug_text text="'AIC TRANSFER rejected (insufficient funds) amt=' + $amt" filter="general"/>
+          </do_else>
+        </do_if>
+        <!-- #252: production favor - the manager's station gains REAL stock (add_cargo, the
+             DeadAir Fill-engine actuation). The player buys it at the terminal like any stock. -->
+        <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'production_priority' and ($paid or $amt == 0)">
+          <set_value name="$np2" exact="if md.ai_influence_conversation.State.$current_npc? then md.ai_influence_conversation.State.$current_npc else null"/>
+          <set_value name="$st2" exact="if $np2 != null then @$np2.container else null"/>
+          <set_value name="$nw2" exact="if $st2 != null then @$st2.cargo.list.count else null"/>
+          <set_value name="$nw2" exact="if $nw2 != null then $nw2 else 0"/>
+          <do_if value="$nw2 gt 0">
+            <set_value name="$w2" exact="$st2.cargo.list.{1}"/>
+            <add_cargo object="$st2" ware="$w2" exact="100" result="$added2"/>
+            <show_notification text="'Production prioritized: stock reserved at ' + @$st2.knownname"/>
+            <write_to_logbook category="general" title="'Production Favor'" text="'The manager at ' + @$st2.knownname + ' prioritized production - ' + (if $added2? then $added2 else 0) + ' units of ' + @$w2.name + ' added to station stock.'"/>
+            <debug_text text="'AIC FAVOR add_cargo ' + (if $added2? then $added2 else 0) + ' of ' + @$w2 + ' at ' + @$st2.knownname" filter="general"/>
+          </do_if>
+        </do_if>
+        <!-- #252: blind eye - a bribed officer scrubs the player from THIS faction's security
+             records for 24 ledger-hours (consulted by On_security_alert below). -->
+        <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'blind_eye' and ($paid or $amt == 0)">
+          <set_value name="$bf" exact="if md.ai_influence_conversation.State.$facname? then md.ai_influence_conversation.State.$facname else ''"/>
+          <do_if value="$bf != ''">
+            <set_value name="Guard.$BlindEye.{'$' + $bf}" exact="(player.age / 1h) + 24"/>
+            <write_to_logbook category="general" title="'An Understanding'" text="'An officer of ' + $bf + ' has agreed to keep your name out of security reports for a while.'"/>
+            <debug_text text="'AIC BLIND EYE armed for ' + $bf + ' until beat ' + Guard.$BlindEye.{'$' + $bf}" filter="general"/>
+          </do_if>
+        </do_if>
+        <!-- U-D4b (#231): a paid (or already-paid, $amt == 0) intel deliverable is fulfilled with REAL
+             station data - the conversation NPC's own station cargo, stock vs demand target (the
+             DeadAir Fill-engine read: $station.cargo.list / .{$ware}.count / .target). Words never
+             mint data; shortages here are genuinely actionable trade intel. -->
+        <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'trade_summary' and ($paid or $amt == 0)">
+          <set_value name="$npc" exact="if md.ai_influence_conversation.State.$current_npc? then md.ai_influence_conversation.State.$current_npc else null"/>
+          <set_value name="$sta" exact="if $npc != null then @$npc.container else null"/>
+          <!-- '@' silently yields null on a failed lookup; NEVER combine '@' with '?' (parse error,
+               caught in-game 2026-07-22 - the sweep exists for exactly this class) -->
+          <set_value name="$nw" exact="if $sta != null then @$sta.cargo.list.count else null"/>
+          <set_value name="$nw" exact="if $nw != null then $nw else 0"/>
+          <do_if value="$nw gt 0">
+            <set_value name="$lines" exact="''"/>
+            <set_value name="$i" exact="0"/>
+            <do_all exact="$sta.cargo.list.count" counter="$c">
+              <do_if value="$i lt 8">
+                <set_value name="$w" exact="$sta.cargo.list.{$c}"/>
+                <set_value name="$cnt" exact="@$sta.cargo.{$w}.count"/>
+                <set_value name="$cnt" exact="if $cnt != null then $cnt else 0"/>
+                <set_value name="$tgt" exact="@$sta.cargo.{$w}.target"/>
+                <set_value name="$tgt" exact="if $tgt != null then $tgt else 0"/>
+                <set_value name="$tag" exact="'STOCKED'"/>
+                <do_if value="$tgt gt 0 and $cnt lt ($tgt / 2)">
+                  <set_value name="$tag" exact="'SHORTAGE - they will pay well'"/>
+                </do_if>
+                <do_elseif value="$tgt gt 0 and $cnt gt $tgt">
+                  <set_value name="$tag" exact="'SURPLUS - buy cheap'"/>
+                </do_elseif>
+                <set_value name="$lines" exact="$lines + @$w.name + ': ' + $cnt + ' of ' + $tgt + ' (' + $tag + '). '"/>
+                <set_value name="$i" exact="$i + 1"/>
+              </do_if>
+            </do_all>
+            <write_to_logbook category="general" title="'Trade Ledger Summary - ' + @$sta.knownname" text="'Compiled in confidence at ' + @$sta.knownname + (if @$sta.sector != null then ' (' + $sta.sector.knownname + ')' else '') + '. Live stock vs demand: ' + $lines"/>
+            <show_notification text="'Dossier received: Trade Ledger Summary'"/>
+            <raise_lua_event name="'AIChat.intel_delivered'" param="$i"/>
+            <debug_text text="'AIC INTEL delivered wares=' + $i + ' station=' + @$sta.knownname" filter="general"/>
+          </do_if>
+          <do_else>
+            <debug_text text="'AIC INTEL no station/cargo resolvable for deliverable'" filter="general"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="On_security_alert" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'security_alert'"/>
+      </conditions>
+      <actions>
+        <!-- doc-07a (#237): conversation violence -> REAL consequences. The identity rule is the
+             payoff of the deception layer: an NPC who never learned who you are cannot have your
+             faction standing punished - only the local incident is recorded. -->
+        <set_value name="$sd" exact="event.param3"/>
+        <set_value name="$sf" exact="if $sd.$faction? then $sd.$faction else ''"/>
+        <show_notification text="'Station security alert'"/>
+        <write_to_logbook category="general" title="'Security Incident'" text="if $sd.$desc? then $sd.$desc else 'A security incident aboard a station.'"/>
+        <!-- #252: an active blind-eye deal scrubs the player's name before consequences land -->
+        <do_if value="$sf != '' and Guard.$BlindEye? and Guard.$BlindEye.{'$' + $sf}? and Guard.$BlindEye.{'$' + $sf} gt (player.age / 1h)">
+          <set_value name="$sd.$identified" exact="false"/>
+          <debug_text text="'AIC SECURITY blind-eye active for ' + $sf + ' - record scrubbed'" filter="general"/>
+        </do_if>
+        <do_if value="$sd.$identified? and $sd.$identified and $sf != '' and faction.{$sf}?">
+          <set_value name="$cur2" exact="if faction.{$sf}.relationto.{faction.player}? then faction.{$sf}.relationto.{faction.player} else 0"/>
+          <set_value name="$hit" exact="if $sd.$severity? and $sd.$severity == 'major' then 0.03 else 0.01"/>
+          <!-- doc-07b (#248): the ESCALATION LADDER - repeat identified offenders pay double, and at
+               three-plus incidents the faction's security services formally take notice. -->
+          <set_value name="$rep" exact="if $sd.$repeat_n? then $sd.$repeat_n else 1"/>
+          <do_if value="$rep ge 2">
+            <set_value name="$hit" exact="$hit * 2"/>
+          </do_if>
+          <set_faction_relation faction="faction.{$sf}" otherfaction="faction.player" value="[($cur2 - $hit), -1.0].max"/>
+          <debug_text text="'AIC SECURITY relation hit ' + $sf + ' vs player -' + $hit + ' (identified, repeat=' + $rep + ')'" filter="general"/>
+          <do_if value="$rep ge 3">
+            <show_notification text="faction.{$sf}.knownname + ' security services are now watching you'"/>
+            <write_to_logbook category="general" title="'Security Attention'" text="'Repeated incidents have drawn formal attention from ' + faction.{$sf}.knownname + ' security services. Expect closer scrutiny at their stations.'"/>
+            <debug_text text="'AIC SECURITY escalation: formal attention from ' + $sf" filter="general"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'AIC SECURITY incident recorded (player NOT identified - no standing hit)'" filter="general"/>
+        </do_else>
+      </actions>
+    </cue>
+    <cue name="On_shakedown" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'shakedown'"/>
+      </conditions>
+      <actions>
+        <!-- #251: under a LANDED in-person threat, the captain's ship jettisons a bounded slice of
+             its real cargo (first ware, quarter of stock, cap 50) - the player can scoop it. The
+             fear/resentment economy and security lanes price the behavior; this is the payoff. -->
+        <set_value name="$np" exact="if md.ai_influence_conversation.State.$current_npc? then md.ai_influence_conversation.State.$current_npc else null"/>
+        <set_value name="$sh" exact="if $np != null then @$np.ship else null"/>
+        <set_value name="$nw" exact="if $sh != null then @$sh.cargo.list.count else null"/>
+        <set_value name="$nw" exact="if $nw != null then $nw else 0"/>
+        <do_if value="$nw gt 0">
+          <set_value name="$w" exact="$sh.cargo.list.{1}"/>
+          <set_value name="$cnt" exact="@$sh.cargo.{$w}.count"/>
+          <set_value name="$cnt" exact="if $cnt != null then $cnt else 0"/>
+          <do_if value="$cnt gt 0">
+            <set_value name="$amt" exact="[($cnt / 4), 50].min"/>
+            <set_value name="$amt" exact="[$amt, 1].max"/>
+            <drop_cargo object="$sh" ware="$w" exact="$amt"/>
+            <show_notification text="@$sh.knownname + ' jettisons cargo under duress'"/>
+            <write_to_logbook category="general" title="'Shakedown'" text="'Under threat, ' + @$sh.knownname + ' jettisoned ' + $amt + ' units of cargo.'"/>
+            <debug_text text="'AIC SHAKEDOWN ' + $amt + ' of ' + @$w + ' from ' + @$sh.idcode" filter="general"/>
+          </do_if>
+        </do_if>
+        <do_else>
+          <debug_text text="'AIC SHAKEDOWN no ship/cargo resolvable'" filter="general"/>
+        </do_else>
+      </actions>
+    </cue>
+    <cue name="On_player_kill" instantiate="true" namespace="this">
+      <conditions>
+        <event_player_owned_killed_object/>
+      </conditions>
+      <actions>
+        <!-- #254: War Monitor port (Alive Universe OnPlayerKill) - the player's CAPITAL kills and
+             station destructions become ledger events the whole galaxy layer sees: conversations
+             reference them, the event generator develops them, diplomacy feels them. Fighter-scale
+             kills are ignored (noise); collected/removed killmethods filtered (their pattern). -->
+        <do_if value="event.param3 != killmethod.collected and event.param3 != killmethod.removed and event.param2?">
+          <set_value name="$vic" exact="event.param2"/>
+          <set_value name="$big" exact="false"/>
+          <do_if value="@$vic.isclass.{class.ship_l} or @$vic.isclass.{class.ship_xl} or @$vic.isclass.{class.station}">
+            <set_value name="$big" exact="true"/>
+          </do_if>
+          <do_if value="$big">
+            <set_value name="$vkind" exact="if @$vic.isclass.{class.station} then 'station' else 'capital ship'"/>
+            <set_value name="$vown" exact="@$vic.owner.knownname"/>
+            <set_value name="$vown" exact="if $vown != null then $vown else 'unknown forces'"/>
+            <set_value name="$vsec" exact="@$vic.sector.knownname"/>
+            <set_value name="$vsec" exact="if $vsec != null then $vsec else 'unknown space'"/>
+            <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + (if $vic.owner? then $vic.owner else '') + '|to=' + 'The player destroyed the ' + $vkind + ' ' + @$vic.knownname + ' (' + $vown + ') in ' + $vsec"/>
+            <debug_text text="'AIC WAR MONITOR: player killed ' + $vkind + ' ' + @$vic.knownname + ' owner=' + $vown" filter="general"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <cue name="On_contagion_seek" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'contagion_seek'"/>
+      </conditions>
+      <actions>
+        <!-- #256: outbreaks ignite ANYWHERE in the galaxy, not at the player - random civilized
+             faction, random station (owner id known BY CONSTRUCTION, dodging the display-name
+             stringify gotcha). Lua starts the clock at the answer. -->
+        <set_value name="$CgF" exact="['argon', 'antigone', 'teladi', 'ministry', 'paranid', 'holyorder', 'split', 'freesplit']"/>
+        <set_value name="$cgf" min="1" max="$CgF.count"/>
+        <set_value name="$cgid" exact="$CgF.{$cgf}"/>
+        <do_if value="faction.{$cgid}?">
+          <find_station name="$CgL" owner="faction.{$cgid}" space="player.galaxy" multiple="true"/>
+          <do_if value="$CgL? and $CgL.count gt 0">
+            <set_value name="$cgi" min="1" max="$CgL.count"/>
+            <set_value name="$CgS" exact="$CgL.{$cgi}"/>
+            <raise_lua_event name="'AIChat.contagion_at'" param="'sector=' + (if $CgS.sector? then $CgS.sector.knownname else 'deep space') + '|faction=' + $cgid"/>
+            <debug_text text="'AIC CONTAGION seek -> ' + $CgS.knownname + ' in ' + (if $CgS.sector? then $CgS.sector.knownname else '?') + ' (' + $cgid + ')'" filter="general"/>
+          </do_if>
+        </do_if>
+      </actions>
     </cue>
   </cues>
 </mdscript>

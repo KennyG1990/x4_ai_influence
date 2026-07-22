@@ -215,18 +215,19 @@
                 <!-- U1 analysis gate: a completed round waits for the referee, not more statements.
                      Stand-in until U3 lands: continue to round 2, conclude after round 2. -->
                 <do_if value="($ev.$analysis_due? and $ev.$analysis_due gt 0) and $now ge $ev.$analysis_due and faction.{$ev.$a}? and faction.{$ev.$b}?">
-                  <do_if value="$ev.$round ge 2">
+                  <do_if value="$ev.$round ge 4">
+                    <!-- U3 failsafe (port of null-result retry exhaustion): referee unreachable for
+                         2+ rounds -> deterministic close, mirrors the old stand-in -->
                     <signal_cue_instantly cue="Close_event" param="table[$a = $ev.$a, $b = $ev.$b]"/>
                     <write_to_logbook category="diplomacy" title="'Talks Concluded'" text="'After ' + $ev.$round + ' rounds, the diplomacy between ' + faction.{$ev.$a}.knownname + ' and ' + faction.{$ev.$b}.knownname + ' has run its course.'"/>
-                    <debug_text text="'AIC DIPLO analysis: CONCLUDE ' + $ev.$a + ' vs ' + $ev.$b + ' after round ' + $ev.$round + ' (U3 referee pending)'" filter="general"/>
+                    <debug_text text="'AIC DIPLO U3 failsafe close ' + $ev.$a + ' vs ' + $ev.$b" filter="general"/>
                   </do_if>
                   <do_else>
-                    <set_value name="$ev.$round" operation="add"/>
-                    <set_value name="$ev.$round_start_n" exact="$ev.$n"/>
-                    <set_value name="$ev.$analysis_due" exact="0"/>
-                    <set_value name="$iv2" min="1" max="2"/>
-                    <set_value name="$ev.$next" exact="$now + $iv2"/>
-                    <debug_text text="'AIC DIPLO analysis: CONTINUE ' + $ev.$a + ' vs ' + $ev.$b + ' -> round ' + $ev.$round" filter="general"/>
+                    <!-- U3: ask the LLM REFEREE (AnalyzeDiplomaticEvent port). Re-arms +6 beats so an
+                         unanswered ask self-heals; the verdict lands via On_diplo_verdict. -->
+                    <set_value name="$ev.$analysis_due" exact="$now + 6"/>
+                    <raise_lua_event name="'AIChat.diplo_analyze'" param="'a=' + $ev.$a + '|b=' + $ev.$b + '|kind=' + $ev.$kind + '|round=' + $ev.$round + '|n=' + $ev.$n + '|rel=' + (if faction.{$ev.$a}.relationto.{faction.{$ev.$b}}? then faction.{$ev.$a}.relationto.{faction.{$ev.$b}} else 0)"/>
+                    <debug_text text="'AIC DIPLO U3 referee asked ' + $ev.$a + ' vs ' + $ev.$b + ' round ' + $ev.$round" filter="general"/>
                   </do_else>
                 </do_if>
                 <do_if value="(not ($ev.$analysis_due? and $ev.$analysis_due gt 0)) and $now ge $ev.$next and faction.{$ev.$a}? and faction.{$ev.$b}?">
@@ -246,6 +247,38 @@
     </cue>
     <!-- U1 failure discipline: a failed LLM statement retries in 1 beat, max 3 attempts; at the cap the
          speaker is counted as responded (advance speaker + round math without a statement). -->
+    <cue name="On_diplo_verdict" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_verdict'"/>
+      </conditions>
+      <actions>
+        <set_value name="$vd" exact="event.param3"/>
+        <set_value name="$vkey" exact="'$d_' + $vd.$a + '_' + $vd.$b"/>
+        <do_if value="DiploEvents.$Events.{$vkey}?">
+          <set_value name="$vev" exact="DiploEvents.$Events.{$vkey}"/>
+          <!-- #258: verdict DEDUP (live-observed race 2026-07-22: two tick instances asked the
+               referee in the same beat) - only the FIRST verdict counts; it zeroes analysis_due,
+               so any duplicate arriving after is dropped here. -->
+          <do_if value="not ($vev.$analysis_due? and $vev.$analysis_due gt 0)">
+            <debug_text text="'AIC DIPLO U3 duplicate verdict dropped for ' + $vd.$a + ' vs ' + $vd.$b" filter="general"/>
+          </do_if>
+          <do_if value="($vev.$analysis_due? and $vev.$analysis_due gt 0) and $vd.$verdict? and $vd.$verdict == 'end'">
+            <signal_cue_instantly cue="Close_event" param="table[$a = $vd.$a, $b = $vd.$b]"/>
+            <write_to_logbook category="diplomacy" title="'Talks Concluded'" text="if $vd.$update? then $vd.$update else 'The talks have concluded.'"/>
+            <debug_text text="'AIC DIPLO U3 referee CONCLUDES ' + $vd.$a + ' vs ' + $vd.$b" filter="general"/>
+          </do_if>
+          <do_elseif value="$vev.$analysis_due? and $vev.$analysis_due gt 0">
+            <set_value name="$vev.$round" operation="add"/>
+            <set_value name="$vev.$round_start_n" exact="$vev.$n"/>
+            <set_value name="$vev.$analysis_due" exact="0"/>
+            <set_value name="$viv" min="1" max="2"/>
+            <set_value name="$vev.$next" exact="(player.age / 1h) + $viv"/>
+            <write_to_logbook category="diplomacy" title="'Talks Continue'" text="if $vd.$update? then $vd.$update else 'Negotiations continue.'"/>
+            <debug_text text="'AIC DIPLO U3 referee CONTINUES ' + $vd.$a + ' vs ' + $vd.$b + ' -> round ' + $vev.$round" filter="general"/>
+          </do_else>
+        </do_if>
+      </actions>
+    </cue>
     <cue name="Stmt_failed" instantiate="true" namespace="this">
       <conditions>
         <event_ui_triggered screen="'ai_influence'" control="'diplo_stmt_failed'"/>
