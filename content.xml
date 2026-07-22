@@ -7,7 +7,7 @@
        remaining bridge lanes are being re-homed into this mod and are gated by BRIDGE_ENABLED in aic_uix.lua. -->
   <!-- djfhe HTTP client is required: it carries the chat round-trip to the Neural Link bridge.
        Without it the HTTP calls silently no-op. -->
-  <dependency id="djfhe_http" />
+  <dependency id="djfhe_http" optional="true" /><!-- #224: transport is now BUILT-IN (aic_http.lua over bundled MIT LuaSocket); djfhe remains an optional fallback only -->
   <!-- SirNukes Mod Support APIs provides the Hotkey + Lua-loader APIs the conversation/hotkey
        cues use; optional so the mod still loads (those features just won't bind) if it's absent. -->
   <dependency id="ws_2042901274" optional="true" /><!-- SirNukes Mod Support APIs (folder sn_mod_support_apis; the content id is the workshop id). NOTE: its Hotkey API only fires if the external X4 Python Pipe Server is running on the host. -->

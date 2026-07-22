@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon name="ai_influence" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../ui/core/addon.xsd">
   <environment type="menus">
+    <file name="ui/addons/ai_influence_chat/aic_http.lua" />
     <file name="ui/ai_influence.lua" />
     <file name="ui/addons/ai_influence_chat/aic_uix.lua" />
     <file name="ui/addons/ai_influence_chat/aic_menu.lua" />

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="aic_http_pump" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- #224 AIC-HTTP pump: advances the mod's own async HTTP state machine (aic_http.lua). -->
+  <cues>
+    <cue name="Pump" checkinterval="50ms" instantiate="true">
+      <actions>
+        <raise_lua_event name="'aic.http.update'"/>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

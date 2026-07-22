@@ -74,6 +74,120 @@
         <signal_cue_instantly cue="Close_event" param="table[$a = event.param3.$a, $b = event.param3.$b]"/>
       </actions>
     </cue>
+    <!-- #222 DYNAMIC PAIR SELECTION (DeadAir dynamicwar port): every 30min, pick a galaxy-wide faction
+         pair — FactionOne by fairness accumulator (DeadAir $FactionTable shape: selected -20 floor ~5,
+         others drift +1..3 cap 30), FactionTwo by weighted roll over the top accumulated candidates scored
+         by STRENGTH IMBALANCE (fight-ship ratio x sector ratio; imbalanced pairs are diplomatically
+         interesting) — then OPEN an LLM-driven diplomatic event for them. DeadAir decides WHO; Player2
+         decides WHAT (the #221 statement lane). Galaxy-wide by construction: get_factions_by_tag +
+         find_ship_by_true_owner/find_sector are all space="player.galaxy". -->
+    <library name="Select_pair">
+      <actions>
+        <do_if value="DiploEvents.$Pairs.count lt 4">
+          <set_value name="$Excluded" exact="[faction.civilian, faction.criminal, faction.khaak, faction.player, faction.smuggler, faction.visitor, faction.xenon]"/>
+          <get_factions_by_tag tag="tag.claimspace" result="$Pool"/>
+          <remove_from_list name="$Pool" list="$Excluded" multiple="true"/>
+          <do_all exact="$Pool.count" counter="$A" reverse="true">
+            <do_if value="($Pool.{$A} == null) or ($Pool.{$A}.isactive != true)">
+              <remove_value name="$Pool.{$A}"/>
+            </do_if>
+          </do_all>
+          <do_if value="$Pool.count ge 2">
+            <do_if value="not DiploEvents.$Chance?">
+              <set_value name="DiploEvents.$Chance" exact="table[]"/>
+            </do_if>
+            <do_all exact="$Pool.count" counter="$B">
+              <do_if value="not DiploEvents.$Chance.{$Pool.{$B}}?">
+                <set_value name="DiploEvents.$Chance.{$Pool.{$B}}" exact="[15,16,17,18,19,20].random"/>
+              </do_if>
+            </do_all>
+            <set_value name="$PoolFull" exact="[]"/>
+            <do_all exact="$Pool.count" counter="$Z">
+              <append_to_list name="$PoolFull" exact="$Pool.{$Z}"/>
+            </do_all>
+            <!-- FactionOne = highest accumulated chance (ties keep first) -->
+            <set_value name="$One" exact="$Pool.{1}"/>
+            <do_all exact="$Pool.count" counter="$C">
+              <do_if value="DiploEvents.$Chance.{$Pool.{$C}} gt DiploEvents.$Chance.{$One}">
+                <set_value name="$One" exact="$Pool.{$C}"/>
+              </do_if>
+            </do_all>
+            <remove_from_list name="$Pool" exact="$One"/>
+            <sort_list list="$Pool" sortbyvalue="DiploEvents.$Chance.{loop.element}" sortdescending="true"/>
+            <do_if value="$Pool.count gt 3">
+              <do_all exact="$Pool.count" counter="$D" reverse="true">
+                <do_if value="$D gt 3">
+                  <remove_value name="$Pool.{$D}"/>
+                </do_if>
+              </do_all>
+            </do_if>
+            <!-- strength = (fight ships + 1) x (sectors + 1); imbalance = max(r, 1/r) clamped [1, 2] -->
+            <find_ship_by_true_owner groupname="$OneShips" space="player.galaxy" multiple="true" faction="$One" primarypurpose="purpose.fight"/>
+            <find_sector groupname="$OneSectors" space="player.galaxy" multiple="true" owner="$One"/>
+            <set_value name="$OneStr" exact="(($OneShips.count + 1)f) * (($OneSectors.count + 1)f)"/>
+            <set_value name="$W" exact="[]"/>
+            <do_all exact="$Pool.count" counter="$E">
+              <find_ship_by_true_owner groupname="$CandShips" space="player.galaxy" multiple="true" faction="$Pool.{$E}" primarypurpose="purpose.fight"/>
+              <find_sector groupname="$CandSectors" space="player.galaxy" multiple="true" owner="$Pool.{$E}"/>
+              <set_value name="$CandStr" exact="(($CandShips.count + 1)f) * (($CandSectors.count + 1)f)"/>
+              <set_value name="$Ratio" exact="$OneStr / $CandStr"/>
+              <set_value name="$Imb" exact="[[if $Ratio ge 1.0 then $Ratio else (1.0 / $Ratio), 1.0].max, 2.0].min"/>
+              <append_to_list name="$W" exact="DiploEvents.$Chance.{$Pool.{$E}} * $Imb"/>
+            </do_all>
+            <set_value name="$Two" exact="$Pool.random"/>
+            <do_any>
+              <set_value name="$Two" exact="$Pool.{1}" weight="if $Pool.{1}? then (1 + $W.{1}) else 0"/>
+              <set_value name="$Two" exact="if $Pool.{2}? then $Pool.{2} else $Pool.{1}" weight="if $Pool.{2}? then (1 + $W.{2}) else 0"/>
+              <set_value name="$Two" exact="if $Pool.{3}? then $Pool.{3} else $Pool.{1}" weight="if $Pool.{3}? then (1 + $W.{3}) else 0"/>
+            </do_any>
+            <!-- fairness churn (DeadAir DynamicWarUpdateChance shape) -->
+            <do_all exact="$PoolFull.count" counter="$M">
+              <do_if value="($PoolFull.{$M} == $One) or ($PoolFull.{$M} == $Two)">
+                <set_value name="DiploEvents.$Chance.{$PoolFull.{$M}}" exact="[DiploEvents.$Chance.{$PoolFull.{$M}} - 20, ([4,5,6].random)].max"/>
+              </do_if>
+              <do_else>
+                <set_value name="DiploEvents.$Chance.{$PoolFull.{$M}}" exact="[DiploEvents.$Chance.{$PoolFull.{$M}} + ([1,2,3].random), 30].min"/>
+              </do_else>
+            </do_all>
+            <!-- FACTION-ID RESOLVER (the #205-proven pattern): faction objects stringify to DISPLAY
+                 names, so match each against the known id list; unresolvable (DLC-only) pairs are skipped. -->
+            <!-- extended with DLC/base ids; every lookup is ?-guarded so absent ids are harmless -->
+            <set_value name="$KnownIds" exact="['argon', 'antigone', 'alliance', 'hatikvah', 'teladi', 'ministry', 'paranid', 'holyorder', 'split', 'freesplit', 'scaleplate', 'terran', 'pioneers', 'boron', 'buccaneers', 'riptide', 'court', 'yaki']"/>
+            <set_value name="$OneId" exact="''"/>
+            <set_value name="$TwoId" exact="''"/>
+            <do_all exact="$KnownIds.count" counter="$K">
+              <do_if value="$OneId == '' and faction.{$KnownIds.{$K}}? and faction.{$KnownIds.{$K}} == $One">
+                <set_value name="$OneId" exact="$KnownIds.{$K}"/>
+              </do_if>
+              <do_if value="$TwoId == '' and faction.{$KnownIds.{$K}}? and faction.{$KnownIds.{$K}} == $Two">
+                <set_value name="$TwoId" exact="$KnownIds.{$K}"/>
+              </do_if>
+            </do_all>
+            <do_if value="$OneId != '' and $TwoId != ''">
+              <debug_text text="'AIC DIPLO pair selected ' + $OneId + ' vs ' + $TwoId + ' (oneStr=' + $OneStr + ')'" filter="general"/>
+              <signal_cue_instantly cue="Open_event" param="table[$a = $OneId, $b = $TwoId, $kind = 'dynamic']"/>
+            </do_if>
+            <do_else>
+              <debug_text text="'AIC DIPLO pair unresolved (' + $One + ' / ' + $Two + '), skipped'" filter="general"/>
+            </do_else>
+          </do_if>
+        </do_if>
+      </actions>
+    </library>
+    <cue name="Pair_tick" instantiate="true" checkinterval="30min" checktime="player.age + 5min">
+      <actions>
+        <include_actions ref="Select_pair"/>
+      </actions>
+    </cue>
+    <!-- test lane: immediate one-shot selection (probe rigs) -->
+    <cue name="Pair_test" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_pair_test'"/>
+      </conditions>
+      <actions>
+        <include_actions ref="Select_pair"/>
+      </actions>
+    </cue>
     <!-- the statement tick: first DUE event gets ONE LLM statement request; interval 2 game-hours/event -->
     <cue name="Diplo_boot" namespace="this">
       <actions>
@@ -120,6 +234,12 @@
           <set_value name="$ekey" exact="'$d_' + $d.$a + '_' + $d.$b"/>
           <do_if value="DiploEvents.$Events.{$ekey}?">
             <set_value name="DiploEvents.$Events.{$ekey}.$n" operation="add"/>
+            <!-- #225 resolution: a diplomatic situation CONCLUDES after 5 statements (soak fix: no
+                 endless monotonic drift; the pair tick rotates fresh situations in) -->
+            <do_if value="DiploEvents.$Events.{$ekey}.$n ge 5">
+              <signal_cue_instantly cue="Close_event" param="table[$a = $d.$a, $b = $d.$b]"/>
+              <write_to_logbook category="diplomacy" title="'Talks Concluded'" text="'The round of diplomacy between ' + faction.{$d.$a}.knownname + ' and ' + faction.{$d.$b}.knownname + ' has run its course.'"/>
+            </do_if>
             <!-- ContinueDiplomaticNegotiations port: the OTHER faction speaks next, after a random 1-3 beat gap -->
             <set_value name="$iv" min="1" max="3"/>
             <set_value name="DiploEvents.$Events.{$ekey}.$next" exact="(player.age / 1h) + $iv"/>

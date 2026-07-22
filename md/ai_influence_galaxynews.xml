@@ -255,20 +255,30 @@
             <set_value name="$econChecked" exact="0"/>
             <set_value name="$econEvents" exact="0"/>
             <set_value name="$shortlist" exact="''"/>
-            <do_if value="player.sector.exists">
-              <find_station name="$EconStations" space="player.sector" multiple="true" knownto="faction.player"/>
-              <do_for_each name="$st" in="$EconStations">
-                <do_if value="$econChecked lt 6 and $st.knownname? and $st.isoperational?">
+            <!-- #220: GALAXY-WIDE rotating sweep (no player-sector limits) — 6 stations per tick through a
+                 persistent cursor over every known station in the galaxy; crises are tagged with the
+                 STATION's sector so #214 knowledge-gating works everywhere -->
+            <find_station name="$EconStations" space="player.galaxy" multiple="true" knownto="faction.player"/>
+            <do_if value="not Galaxy_pulse.$EconCursor?">
+              <set_value name="Galaxy_pulse.$EconCursor" exact="0"/>
+            </do_if>
+            <do_if value="$EconStations.count gt 0">
+              <do_all exact="6" counter="$w">
+                <set_value name="$eidx" exact="Galaxy_pulse.$EconCursor + $w"/>
+                <do_if value="$eidx le $EconStations.count">
+                <set_value name="$st" exact="$EconStations.{$eidx}"/>
+                <do_if value="$st.knownname? and $st.isoperational?">
                   <set_value name="$econChecked" operation="add"/>
+                  <set_value name="$stsec" exact="if $st.sector.knownname? then $st.sector.knownname else 'unknown space'"/>
                   <set_value name="$ec" exact="if $st.cargo.{ware.energycells}.count? then $st.cargo.{ware.energycells}.count else -1"/>
                   <set_value name="$ekey" exact="'$e_' + $st.knownname"/>
                   <do_if value="$ec == 0 and not Galaxy_pulse.$Snap.{$ekey}?">
                     <set_value name="Galaxy_pulse.$Snap.{$ekey}" exact="1"/>
                     <set_value name="$econEvents" operation="add"/>
                     <set_value name="$shortlist" exact="$shortlist + $st.knownname + ';'"/>
-                    <write_to_logbook category="news" title="'Power Crisis'" text="$st.knownname + ' in ' + player.sector.knownname + ' has exhausted its Energy Cell reserves; production lines are stalling.'"/>
+                    <write_to_logbook category="news" title="'Power Crisis'" text="$st.knownname + ' in ' + $stsec + ' has exhausted its Energy Cell reserves; production lines are stalling.'"/>
                     <!-- #212 world-events ledger: economy events are conversation-visible too -->
-                    <raise_lua_event name="'AIChat.world_event'" param="'kind=crisis|a=' + $st.knownname + '|b=' + player.sector.knownname + '|to=power_crisis'"/>
+                    <raise_lua_event name="'AIChat.world_event'" param="'kind=crisis|a=' + $st.knownname + '|b=' + $stsec + '|to=power_crisis'"/>
                     <!-- FACTION-ID RESOLVER (inline): match the station's owner against the known id list to get
                          a usable id string, then mint a SUPPLY contract from that NPC faction (#204 pattern). -->
                     <set_value name="$sfid" exact="''"/>
@@ -279,7 +289,7 @@
                     </do_for_each>
                     <do_if value="$sfid != '' and not Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}?">
                       <set_value name="Galaxy_pulse.$Snap.{'$sc_' + $st.knownname}" exact="1"/>
-                      <raise_lua_event name="'AIChat.mint_contract'" param="'job=supply_' + $st.knownname + '|faction=' + $sfid + '|title=Energy Cell Supply: ' + $st.knownname + '|summary=' + faction.{$sfid}.knownname + ' urgently needs Energy Cells delivered to ' + $st.knownname + ' in ' + player.sector.knownname + '.|reward=180000|verb=supply|sector=' + player.sector.knownname"/>
+                      <raise_lua_event name="'AIChat.mint_contract'" param="'job=supply_' + $st.knownname + '|faction=' + $sfid + '|title=Energy Cell Supply: ' + $st.knownname + '|summary=' + faction.{$sfid}.knownname + ' urgently needs Energy Cells delivered to ' + $st.knownname + ' in ' + $stsec + '.|reward=180000|verb=supply|sector=' + $stsec"/>
                       <debug_text text="'AIC contract minted (supply) ' + $sfid + ' @ ' + $st.knownname" filter="general"/>
                     </do_if>
                   </do_if>
@@ -289,7 +299,9 @@
                     <write_to_logbook category="news" title="'Supply Restored'" text="'Energy Cell deliveries have resumed at ' + $st.knownname + '.'"/>
                   </do_elseif>
                 </do_if>
-              </do_for_each>
+                </do_if>
+              </do_all>
+              <set_value name="Galaxy_pulse.$EconCursor" exact="if (Galaxy_pulse.$EconCursor + 6) ge $EconStations.count then 0 else (Galaxy_pulse.$EconCursor + 6)"/>
             </do_if>
             <debug_text text="'AIC pulse econ_checked=' + $econChecked + ' econ_events=' + $econEvents" filter="general"/>
             <debug_text text="'AIC-STATE diplo hot=[' + $hotpairs + '] trib=[' + $tribs + '] econ_short=[' + $shortlist + '] player_sector=' + (if player.sector.exists and player.sector.knownname? then player.sector.knownname else '?')" filter="general"/>

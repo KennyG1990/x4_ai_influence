@@ -116,10 +116,19 @@ ffi.cdef [[
 local Request, json = nil, nil
 local function ensureDjfhe()
     if Request then return true end
+    -- #224: prefer the mod's OWN baked-in transport (aic_http.lua, no external HTTP-mod dependency)
+    local own = rawget(_G, "AIC_HTTP")
+    if own and own.initLibs and own.initLibs() then
+        Request = own
+        if not json then json = own.json() end
+        log("transport=aic_http (built-in)")
+        return true
+    end
+    -- fallback: the external djfhe_http extension, if present
     local ok_r, req = pcall(require, "djfhe.http.request")
     if ok_r and req then Request = req end
     if not json then local ok_j, js = pcall(require, "jsonlua.json"); if ok_j then json = js end end
-    if Request then log("djfhe request module loaded (lazy).") end
+    if Request then log("transport=djfhe (external fallback)") end
     return Request ~= nil
 end
 
@@ -739,8 +748,9 @@ end
 -- ---- #221 LLM DIPLOMACY — Player2 DECIDES diplomatic developments; Lua validates; MD executes -----
 -- The Bannerlord-mined shape: per-event statements, band-clamped relation deltas, news + ledger fallout.
 local DIPLO_DELTA_BAND = 0.05
-local KNOWN_FACTIONS = { argon = true, antigone = true, alliance = true, teladi = true, ministry = true,
-    paranid = true, holyorder = true, split = true, freesplit = true, scaleplate = true }
+local KNOWN_FACTIONS = { argon = true, antigone = true, alliance = true, hatikvah = true, teladi = true,
+    ministry = true, paranid = true, holyorder = true, split = true, freesplit = true, scaleplate = true,
+    terran = true, pioneers = true, boron = true, buccaneers = true, riptide = true, court = true, yaki = true }
 function AI_Influence.ValidatePlayerDiploTarget(npcFaction, target)
     target = tostring(target or "")
     if not KNOWN_FACTIONS[target] then return nil end           -- unknown or protected (xenon/khaak/player absent)
@@ -1216,6 +1226,20 @@ function AI_Influence.P2SelfTest()
     check("diplo_hold_zero", dh ~= nil and dh.delta == 0)
     check("diplo_reject_action", AI_Influence.ValidateDiploDecision('{"statement":"x","action":"declare_total_war","relation_delta":0.01}') == nil)
     check("diplo_reject_junk", AI_Influence.ValidateDiploDecision('not json at all') == nil)
+    -- #224 aic_http pure checks (transport correctness without any network)
+    local H = rawget(_G, "AIC_HTTP")
+    check("http_present", H ~= nil)
+    if H then
+        local u = H.parseUrl("http://127.0.0.1:4315/v1/chat/completions")
+        check("http_url", u ~= nil and u.host == "127.0.0.1" and u.port == 4315 and u.path == "/v1/chat/completions")
+        local rq = H.buildRequest("POST", "http://h:1/p", { ["Content-Type"] = "application/json" }, "{}")
+        check("http_reqbytes", rq ~= nil and rq:find("POST /p HTTP/1.1", 1, true) == 1
+            and rq:find("Content%-Length: 2") ~= nil and rq:sub(-2) == "{}")
+        local CRLF = string.char(13) .. string.char(10)
+        local chunkedSample = "4" .. CRLF .. "Wiki" .. CRLF .. "5" .. CRLF .. "pedia" .. CRLF .. "0" .. CRLF .. CRLF
+        check("http_chunked", H.decodeChunked(chunkedSample) == "Wikipedia")
+        check("http_chunked_partial", H.decodeChunked("4" .. CRLF .. "Wik") == nil)
+    end
     check("diplo_ptarget_ok", AI_Influence.ValidatePlayerDiploTarget("teladi", "argon") == "argon")
     check("diplo_ptarget_self", AI_Influence.ValidatePlayerDiploTarget("teladi", "teladi") == nil)
     check("diplo_ptarget_protected", AI_Influence.ValidatePlayerDiploTarget("teladi", "xenon") == nil
@@ -1356,10 +1380,17 @@ end
 -- P1 proof scaffolding: flip true to re-arm the load-time probes (2 Player2 calls per game load).
 local P1_LOAD_PROBES = false
 -- P2 selftest: zero Player2 calls (pure Lua) — cheap enough to run on every load; flip off after #194.
-local P2_PROBES = true  -- #221 diplo: armed to verify the 4 validator checks in-game; strip after
--- #221 rig: opens a teladi/argon 'tension' diplomatic event; the REAL Statement_tick then drives the REAL
--- LLM decision loop (Player2 decides, validator clamps, MD moves the relation). Strip closes the event.
-local DIPLO_PROBE = true
+local P2_PROBES = false  -- #224 aic_http: verified in-game pass=87 fail=0 + live LLM traffic via built-in transport
+-- #221 rig PROVEN 2026-07-22: full LLM-decides loop ran live — 'AIC DIPLO LLM-DECIDED teladi vs argon
+-- action=improve delta=0.04 rel -0.5 -> -0.46' (Player2 chose the action AND delta; validator clamped;
+-- real set_faction_relation moved the galaxy). DIPLO_CLEANUP below closes the seeded test event once.
+local DIPLO_PROBE = false
+local DIPLO_CLEANUP = false  -- test event closed 2026-07-22
+-- #222 rig PROVEN 2026-07-22: full loop live — DeadAir-ported selection picked holyorder vs split
+-- (galaxy-wide, strength 1686, fairness-churned), holyorder SPOKE FOR ITSELF, Player2 DECIDED
+-- improve/+0.03, validator clamped, REAL relation crossed -0.0194 -> +0.0106. The Pair_tick (30min
+-- checkinterval) now drives this permanently. Re-arm to re-test.
+local PAIR_TEST = false
 -- #217 rig: dispatch a patrol player_order through the REAL MD lane (falls back to a real player fight
 -- ship when no conversation NPC is in scope). Proven 2026-07-21: create_order landed on GVS-020
 -- 'Kestrel Vanguard' in Hewa's Twin I. #218 proven: all four verbs executed (patrol/hold=protect,
@@ -1424,6 +1455,16 @@ function AI_Influence.DirectProbe(userLine)
     if DIPLO_PROBE and AddUITriggeredEvent then
         pcall(function() AddUITriggeredEvent("ai_influence", "diplo_open_test", { a = "teladi", b = "argon", kind = "tension" }) end)
         log("DIPLO_PROBE opened teladi/argon tension event")
+    end
+    if DIPLO_CLEANUP and AddUITriggeredEvent then
+        pcall(function() AddUITriggeredEvent("ai_influence", "diplo_close_test", { a = "teladi", b = "argon" }) end)
+        log("DIPLO_CLEANUP closed the seeded test event")
+    end
+    if PAIR_TEST and AddUITriggeredEvent then
+        -- close the mis-keyed display-name event from the first #222 run, then select fresh
+        pcall(function() AddUITriggeredEvent("ai_influence", "diplo_close_test", { a = "Free Families", b = "Duke's Buccaneers" }) end)
+        pcall(function() AddUITriggeredEvent("ai_influence", "diplo_pair_test", { go = "1" }) end)
+        log("PAIR_TEST dispatched immediate pair selection")
     end
     if FOLLOW_PROBE and AddUITriggeredEvent then
         pcall(function() AddUITriggeredEvent("ai_influence", "player_order", { order = "follow" }) end)
