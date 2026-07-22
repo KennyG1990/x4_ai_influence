@@ -10,4 +10,4 @@ All bundled third-party components are MIT-licensed and redistributed with attri
   Copyright (c) 2020 rxi. MIT License. https://github.com/rxi/json.lua
 
 The AIC-HTTP client itself (ui/addons/ai_influence_chat/aic_http.lua) is original code written for this
-mod (clean-room; not derived from any other X4 HTTP extension).
+mod.

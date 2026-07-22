@@ -204,13 +204,17 @@ function menu.display()
     -- so headroom lives on top and the block ends a safe margin above the wheel options (~vh-260).
     local ty = vh - Helper.scaleY(460)
     menu._tab = menu._tab + 1
+    -- Ken 2026-07-22 (readability): ME-style dark subtitle plate behind the transcript — the pure
+    -- floating text washed out over bright scenes (same solid-background pattern as the wedges).
     local ht = frame:addTable(3, { tabOrder = menu._tab, x = cx - tw / 2, y = ty, width = tw,
+                                   backgroundID = "solid",
+                                   backgroundColor = { r = 8, g = 10, b = 14, a = 72 },
                                    highlightMode = "off" })
     ht:setColWidthPercent(1, 74)
     ht:setColWidthPercent(2, 13)
     ht:setColWidthPercent(3, 13)
     -- ME palette (Ken 2026-07-05): the TARGET speaks in orange, the player in green.
-    local NPC_ORANGE = { r = 255, g = 153, b = 51, a = 100 }
+    local NPC_ORANGE = { r = 255, g = 176, b = 84, a = 100 }   -- brighter on the dark plate
     local PLAYER_GREEN = { r = 120, g = 230, b = 130, a = 100 }
     local npcColor = NPC_ORANGE
     if menu.npcState == "scared" then npcColor = Color["text_warning"]

@@ -30,7 +30,7 @@
         <set_value name="$key" exact="'$d_' + $a + '_' + $b"/>
         <!-- MaxParticipatingKingdoms port: at most 4 concurrent diplomatic events -->
         <do_if value="not DiploEvents.$Events.{$key}? and DiploEvents.$Pairs.count lt 4">
-          <set_value name="DiploEvents.$Events.{$key}" exact="table[$a = $a, $b = $b, $kind = event.param.$kind, $next = 0, $n = 0, $speaker = $a]"/>
+          <set_value name="DiploEvents.$Events.{$key}" exact="table[$a = $a, $b = $b, $kind = event.param.$kind, $next = 0, $n = 0, $speaker = $a, $round = 1, $round_start_n = 0, $fail_a = 0, $fail_b = 0, $analysis_due = 0]"/>
           <append_to_list name="DiploEvents.$Pairs" exact="$key"/>
           <debug_text text="'AIC DIPLO event OPENED ' + $a + ' vs ' + $b + ' kind=' + event.param.$kind" filter="general"/>
         </do_if>
@@ -203,7 +203,33 @@
               <set_value name="$k" exact="DiploEvents.$Pairs.{$i}"/>
               <do_if value="$fired == 0 and DiploEvents.$Events.{$k}?">
                 <set_value name="$ev" exact="DiploEvents.$Events.{$k}"/>
-                <do_if value="$now ge $ev.$next and faction.{$ev.$a}? and faction.{$ev.$b}?">
+                <!-- U1 migration: events opened before the round engine get the new fields defaulted -->
+                <do_if value="not $ev.$round?">
+                  <set_value name="$ev.$round" exact="1"/>
+                  <set_value name="$ev.$round_start_n" exact="$ev.$n"/>
+                  <set_value name="$ev.$fail_a" exact="0"/>
+                  <set_value name="$ev.$fail_b" exact="0"/>
+                  <set_value name="$ev.$analysis_due" exact="0"/>
+                  <debug_text text="'AIC DIPLO migrated legacy event ' + $ev.$a + ' vs ' + $ev.$b + ' to round engine'" filter="general"/>
+                </do_if>
+                <!-- U1 analysis gate: a completed round waits for the referee, not more statements.
+                     Stand-in until U3 lands: continue to round 2, conclude after round 2. -->
+                <do_if value="($ev.$analysis_due? and $ev.$analysis_due gt 0) and $now ge $ev.$analysis_due and faction.{$ev.$a}? and faction.{$ev.$b}?">
+                  <do_if value="$ev.$round ge 2">
+                    <signal_cue_instantly cue="Close_event" param="table[$a = $ev.$a, $b = $ev.$b]"/>
+                    <write_to_logbook category="diplomacy" title="'Talks Concluded'" text="'After ' + $ev.$round + ' rounds, the diplomacy between ' + faction.{$ev.$a}.knownname + ' and ' + faction.{$ev.$b}.knownname + ' has run its course.'"/>
+                    <debug_text text="'AIC DIPLO analysis: CONCLUDE ' + $ev.$a + ' vs ' + $ev.$b + ' after round ' + $ev.$round + ' (U3 referee pending)'" filter="general"/>
+                  </do_if>
+                  <do_else>
+                    <set_value name="$ev.$round" operation="add"/>
+                    <set_value name="$ev.$round_start_n" exact="$ev.$n"/>
+                    <set_value name="$ev.$analysis_due" exact="0"/>
+                    <set_value name="$iv2" min="1" max="2"/>
+                    <set_value name="$ev.$next" exact="$now + $iv2"/>
+                    <debug_text text="'AIC DIPLO analysis: CONTINUE ' + $ev.$a + ' vs ' + $ev.$b + ' -> round ' + $ev.$round" filter="general"/>
+                  </do_else>
+                </do_if>
+                <do_if value="(not ($ev.$analysis_due? and $ev.$analysis_due gt 0)) and $now ge $ev.$next and faction.{$ev.$a}? and faction.{$ev.$b}?">
                   <!-- re-arm BEFORE the async call so a slow reply can't double-fire; apply re-randomizes -->
                   <set_value name="$ev.$next" exact="$now + 1"/>
                   <set_value name="$fired" exact="1"/>
@@ -217,6 +243,47 @@
           </actions>
         </cue>
       </cues>
+    </cue>
+    <!-- U1 failure discipline: a failed LLM statement retries in 1 beat, max 3 attempts; at the cap the
+         speaker is counted as responded (advance speaker + round math without a statement). -->
+    <cue name="Stmt_failed" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'diplo_stmt_failed'"/>
+      </conditions>
+      <actions>
+        <set_value name="$fkey" exact="'$d_' + event.param3.$a + '_' + event.param3.$b"/>
+        <do_if value="DiploEvents.$Events.{$fkey}?">
+          <set_value name="$fev" exact="DiploEvents.$Events.{$fkey}"/>
+          <set_value name="$fails" exact="if $fev.$speaker == $fev.$a then $fev.$fail_a else $fev.$fail_b"/>
+          <do_if value="$fails lt 3">
+            <do_if value="$fev.$speaker == $fev.$a">
+              <set_value name="$fev.$fail_a" operation="add"/>
+            </do_if>
+            <do_else>
+              <set_value name="$fev.$fail_b" operation="add"/>
+            </do_else>
+            <set_value name="$fev.$next" exact="(player.age / 1h) + 1"/>
+            <debug_text text="'AIC DIPLO statement FAILED for ' + $fev.$speaker + ' (attempt ' + ($fails + 1) + '/3), retry scheduled'" filter="general"/>
+          </do_if>
+          <do_else>
+            <set_value name="$fev.$n" operation="add"/>
+            <do_if value="$fev.$speaker == $fev.$a">
+              <set_value name="$fev.$speaker" exact="$fev.$b"/>
+              <set_value name="$fev.$fail_a" exact="0"/>
+            </do_if>
+            <do_else>
+              <set_value name="$fev.$speaker" exact="$fev.$a"/>
+              <set_value name="$fev.$fail_b" exact="0"/>
+            </do_else>
+            <do_if value="($fev.$n - $fev.$round_start_n) ge 2">
+              <set_value name="$adly2" min="1" max="2"/>
+              <set_value name="$fev.$analysis_due" exact="(player.age / 1h) + $adly2"/>
+            </do_if>
+            <set_value name="$fev.$next" exact="(player.age / 1h) + 1"/>
+            <debug_text text="'AIC DIPLO max retries; ' + event.param3.$a + ' vs ' + event.param3.$b + ' speaker counted as responded'" filter="general"/>
+          </do_else>
+        </do_if>
+      </actions>
     </cue>
     <!-- the executor: validated LLM decision -> REAL relation change + news + ledger. The debug line
          printing old->new IS the engine proof that the LLM decided a real gamestate change. -->
@@ -234,11 +301,12 @@
           <set_value name="$ekey" exact="'$d_' + $d.$a + '_' + $d.$b"/>
           <do_if value="DiploEvents.$Events.{$ekey}?">
             <set_value name="DiploEvents.$Events.{$ekey}.$n" operation="add"/>
-            <!-- #225 resolution: a diplomatic situation CONCLUDES after 5 statements (soak fix: no
-                 endless monotonic drift; the pair tick rotates fresh situations in) -->
-            <do_if value="DiploEvents.$Events.{$ekey}.$n ge 5">
-              <signal_cue_instantly cue="Close_event" param="table[$a = $d.$a, $b = $d.$b]"/>
-              <write_to_logbook category="diplomacy" title="'Talks Concluded'" text="'The round of diplomacy between ' + faction.{$d.$a}.knownname + ' and ' + faction.{$d.$b}.knownname + ' has run its course.'"/>
+            <!-- U1 round bookkeeping: 2-party round completes when both spoke since round start -->
+            <set_value name="$inRound" exact="DiploEvents.$Events.{$ekey}.$n - DiploEvents.$Events.{$ekey}.$round_start_n"/>
+            <do_if value="$inRound ge 2">
+              <set_value name="$adly" min="1" max="2"/>
+              <set_value name="DiploEvents.$Events.{$ekey}.$analysis_due" exact="(player.age / 1h) + $adly"/>
+              <debug_text text="'AIC DIPLO round ' + DiploEvents.$Events.{$ekey}.$round + ' COMPLETE (' + $d.$a + ' vs ' + $d.$b + '); analysis scheduled'" filter="general"/>
             </do_if>
             <!-- ContinueDiplomaticNegotiations port: the OTHER faction speaks next, after a random 1-3 beat gap -->
             <set_value name="$iv" min="1" max="3"/>

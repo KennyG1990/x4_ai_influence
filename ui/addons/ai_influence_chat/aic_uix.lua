@@ -225,6 +225,7 @@ function AI_Influence.SendDirect(messages, opts, callback)
         end
     end
     req:setBody((json and json.encode) and json.encode(body) or body)
+    if req.setTimeout then req:setTimeout(90) end   -- LLM completions can be slow on big models (Ken hit 30s live)
     log("SendDirect [" .. tostring(be.provider) .. "] msgs=" .. tostring(#messages))
     req:send(function(resp, err)
         if err then
@@ -529,12 +530,14 @@ function AI_Influence.StoreCard(token, cardTable)
     return true
 end
 
+-- #226 fix: FIFO queue instead of a single-flight stash — concurrent loads (boot hydration +
+-- conversation + initiative) each get THEIR OWN response; MD answers load_card strictly in order.
+AI_Influence._pendingCards = AI_Influence._pendingCards or {}
 function AI_Influence.LoadCard(token, callback)
     if not AddUITriggeredEvent then if callback then callback(nil) end return end
-    AI_Influence._pendingCardCb = callback
-    AI_Influence._pendingCardToken = tostring(token)
+    table.insert(AI_Influence._pendingCards, { token = tostring(token), cb = callback })
     pcall(function() AddUITriggeredEvent("ai_influence", "load_card", { token = tostring(token) }) end)
-    log("LoadCard token=" .. tostring(token) .. " (requested)")
+    log("LoadCard token=" .. tostring(token) .. " (queued " .. tostring(#AI_Influence._pendingCards) .. ")")
 end
 
 -- MD -> Lua response: param is the stored JSON string ("" if none). v2: verify + migrate via
@@ -542,14 +545,13 @@ end
 local function onCardLoaded(_, param)
     local raw = tostring(param or "")
     local card, reason = AI_Influence.DecodeCard(raw)
+    local head = table.remove(AI_Influence._pendingCards, 1)
+    local tok = head and head.token or "?"
     if card == nil and reason ~= "empty" then
-        log("card QUARANTINED token=" .. tostring(AI_Influence._pendingCardToken) .. " reason=" .. tostring(reason))
+        log("card QUARANTINED token=" .. tok .. " reason=" .. tostring(reason))
     end
-    log("card_loaded token=" .. tostring(AI_Influence._pendingCardToken) .. " has_card=" .. tostring(card ~= nil)
-        .. " reason=" .. tostring(reason))
-    local cb = AI_Influence._pendingCardCb
-    AI_Influence._pendingCardCb = nil
-    if cb then cb(card, raw) end
+    log("card_loaded token=" .. tok .. " has_card=" .. tostring(card ~= nil) .. " reason=" .. tostring(reason))
+    if head and head.cb then head.cb(card, raw) end
 end
 
 -- ---- doc 06: NPC INITIATIVE (#210) — bonded-but-neglected NPCs reach OUT to the player -------------
@@ -790,9 +792,17 @@ function AI_Influence.OnDiploStatement(param)
     AI_Influence.SendDirect({ { role = "system", content = sys } },
         { max_tokens = 220, response_format = { type = "json_object" } },
     function(ok, raw)
-        if not ok then log("diplo statement call failed") return end
+        if not ok then
+            log("diplo statement call failed")
+            if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "diplo_stmt_failed", { a = g.a, b = g.b }) end) end
+            return
+        end
         local v = AI_Influence.ValidateDiploDecision(raw)
-        if not v then log("diplo decision REJECTED by validator") return end
+        if not v then
+            log("diplo decision REJECTED by validator")
+            if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "diplo_stmt_failed", { a = g.a, b = g.b }) end) end
+            return
+        end
         if AddUITriggeredEvent then
             pcall(function()
                 AddUITriggeredEvent("ai_influence", "diplo_apply", {
@@ -804,6 +814,151 @@ function AI_Influence.OnDiploStatement(param)
         end
         log("diplo decision validated: " .. g.a .. " vs " .. g.b .. " action=" .. v.action .. " delta=" .. tostring(v.delta))
     end)
+end
+
+-- ---- #226 SEMANTIC RECALL — RoleRAG over Player2 embeddings (first mod on the new endpoint) --------
+-- Important memories get 256-dim embeddings (matryoshka-truncated, int8-quantized, base64, stored in a
+-- per-NPC SIDE card so the main card's checksum/byte budget is untouched). Each chat turn embeds the
+-- player's line (+ any not-yet-embedded memories, piggybacked in the same call) and injects the most
+-- RELEVANT memories instead of merely the heaviest. Fallback when embeddings are unavailable: the
+-- Stardew-proven keyword-overlap + recency scorer (zero extra calls).
+local EMBED_MODEL = "text-embedding-3-small"
+local EMBED_DIMS = 256
+local VEC_PREFIX = "aic_vec_"
+
+local B64C = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+function AI_Influence.B64Encode(bytes)
+    local out = {}
+    for i = 1, #bytes, 3 do
+        local a, b, c = bytes:byte(i), bytes:byte(i + 1), bytes:byte(i + 2)
+        local n = a * 65536 + (b or 0) * 256 + (c or 0)
+        local c1 = math.floor(n / 262144) % 64
+        local c2 = math.floor(n / 4096) % 64
+        local c3 = math.floor(n / 64) % 64
+        local c4 = n % 64
+        out[#out + 1] = B64C:sub(c1 + 1, c1 + 1) .. B64C:sub(c2 + 1, c2 + 1)
+            .. (b and B64C:sub(c3 + 1, c3 + 1) or "=") .. (c and B64C:sub(c4 + 1, c4 + 1) or "=")
+    end
+    return table.concat(out)
+end
+local B64R = {}
+for i = 1, 64 do B64R[B64C:sub(i, i)] = i - 1 end
+function AI_Influence.B64Decode(s)
+    local out = {}
+    for i = 1, #s, 4 do
+        local c1, c2 = B64R[s:sub(i, i)], B64R[s:sub(i + 1, i + 1)]
+        local c3, c4 = B64R[s:sub(i + 2, i + 2)], B64R[s:sub(i + 3, i + 3)]
+        if not (c1 and c2) then break end
+        local n = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
+        out[#out + 1] = string.char(math.floor(n / 65536) % 256)
+        if c3 then out[#out + 1] = string.char(math.floor(n / 256) % 256) end
+        if c4 then out[#out + 1] = string.char(n % 256) end
+    end
+    return table.concat(out)
+end
+
+-- int8 quantization: {s = scale, q = base64(signed bytes stored offset+128)}
+function AI_Influence.QuantizeVec(v)
+    local maxabs = 1e-9
+    for i = 1, #v do local a = math.abs(v[i]); if a > maxabs then maxabs = a end end
+    local bytes = {}
+    for i = 1, #v do
+        local q = math.floor(v[i] / maxabs * 127 + 0.5)
+        if q > 127 then q = 127 elseif q < -127 then q = -127 end
+        bytes[#bytes + 1] = string.char(q + 128)
+    end
+    return { s = maxabs, q = AI_Influence.B64Encode(table.concat(bytes)) }
+end
+function AI_Influence.DequantizeVec(qv)
+    if type(qv) ~= "table" or not qv.q then return nil end
+    local bytes = AI_Influence.B64Decode(qv.q)
+    local v = {}
+    for i = 1, #bytes do v[i] = (bytes:byte(i) - 128) / 127 * (tonumber(qv.s) or 1) end
+    return v
+end
+function AI_Influence.Cosine(a, b)
+    if not a or not b or #a == 0 or #a ~= #b then return 0 end
+    local dot, na, nb = 0, 0, 0
+    for i = 1, #a do dot = dot + a[i] * b[i]; na = na + a[i] * a[i]; nb = nb + b[i] * b[i] end
+    if na == 0 or nb == 0 then return 0 end
+    return dot / (math.sqrt(na) * math.sqrt(nb))
+end
+local function vecKey(text)
+    local h = 5381
+    text = tostring(text or "")
+    for i = 1, #text do h = (h * 33 + text:byte(i)) % 4294967296 end
+    return string.format("%08x", h)
+end
+AI_Influence.VecKey = vecKey
+
+-- one embeddings call: input = array of strings -> cb(ok, vectors[])
+function AI_Influence.Embed(texts, cb)
+    local req = newRequest("POST")
+    if not req then if cb then cb(false, "no transport") end return end
+    local be = AI_Influence.ActiveBackend()
+    local base = be.url:gsub("/chat/completions$", "/embeddings")
+    req:setUrl(base)
+    if req.addHeader then
+        pcall(function() req:addHeader("Content-Type", "application/json") end)
+        if be.auth == "player2" then pcall(function() req:addHeader("player2-game-key", be.key) end)
+        elseif be.auth == "bearer" and be.key ~= "" then pcall(function() req:addHeader("Authorization", "Bearer " .. be.key) end) end
+    end
+    -- NOTE (Ken 2026-07-22): Player2 lets the USER pick a default embedding model; an explicit model
+    -- field would override their choice. We omit it (dimensions still requested; not all models truncate,
+    -- so we ALSO truncate defensively below) and fingerprint the response model — stored vectors from a
+    -- different model are invalid for comparison and get invalidated by the caller.
+    if req.setTimeout then req:setTimeout(20) end
+    req:setBody(json.encode({ input = texts, dimensions = EMBED_DIMS }))
+    req:send(function(resp, err)
+        if err or not resp then if cb then cb(false, tostring(err)) end return end
+        if resp:getStatus() ~= 200 then if cb then cb(false, "HTTP " .. tostring(resp:getStatus())) end return end
+        local obj = resp:getJson()
+        if type(obj) ~= "table" or type(obj.data) ~= "table" then if cb then cb(false, "bad embed response") end return end
+        local vecs = {}
+        for i, d in ipairs(obj.data) do
+            local v = d.embedding
+            if type(v) == "table" and #v > EMBED_DIMS then
+                local t = {}
+                for j = 1, EMBED_DIMS do t[j] = v[j] end
+                v = t
+            end
+            vecs[i] = v
+        end
+        if cb then cb(true, vecs, tostring(obj.model or "unknown")) end
+    end)
+end
+
+-- Stardew-proven fallback: keyword overlap + recency (zero calls)
+function AI_Influence.OverlapScore(query, text)
+    local qwords, score = {}, 0
+    for w in tostring(query or ""):lower():gmatch("%a%a%a%a+") do qwords[w] = true end
+    for w in tostring(text or ""):lower():gmatch("%a%a%a%a+") do if qwords[w] then score = score + 1 end end
+    return score
+end
+
+-- Pick the K most RELEVANT tier-visible important memories. Returns texts (best first).
+-- vecCard may be nil (fallback scorer); queryVec may be nil (fallback scorer).
+function AI_Influence.SemanticRecall(card, tier, vecCard, queryVec, queryText, k)
+    k = k or 6
+    local pool = {}
+    for _, m in ipairs((card and card.imp) or {}) do
+        if (tonumber(m.g) or 0) <= tier then pool[#pool + 1] = m end
+    end
+    if #pool == 0 then return {} end
+    local scored = {}
+    for _, m in ipairs(pool) do
+        local s = nil
+        if queryVec and vecCard and type(vecCard.vecs) == "table" then
+            local qv = vecCard.vecs[vecKey(m.t)]
+            if qv then s = AI_Influence.Cosine(queryVec, AI_Influence.DequantizeVec(qv)) end
+        end
+        if s == nil then s = AI_Influence.OverlapScore(queryText, m.t) * 0.1 + (tonumber(m.i) or 0) * 0.01 end
+        scored[#scored + 1] = { t = m.t, s = s }
+    end
+    table.sort(scored, function(a, b) return a.s > b.s end)
+    local out = {}
+    for i = 1, math.min(k, #scored) do out[#out + 1] = scored[i].t end
+    return out
 end
 
 -- P2 identity: blackboard-sticky per-entity token when a real NPC is in scope. Reads $aic_identity
@@ -857,6 +1012,8 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         card.imp = card.imp or {}; card.aliases = card.aliases or {}
         card.bond = tonumber(card.bond) or 0; card.bond_day = tonumber(card.bond_day) or 0
         AI_Influence.DecayBond(card, gameDay())   -- doc 06: neglect cools the bond
+        -- #226: the rest of the turn runs as a continuation so semantic recall can happen first
+        local function continueTurn(relevantFacts)
         -- alias merge: a blackboard/minted token may front different display names over time
         if ctx.target and ctx.target ~= "" then
             local seen = false
@@ -866,6 +1023,14 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         local sys = "You are " .. tostring(ctx.target or "a station officer") .. ", a "
             .. tostring(ctx.role or "officer") .. " of the " .. tostring(ctx.faction or "argon")
             .. " faction on a station in the X4 galaxy. Stay in character. Reply in 1-3 short sentences."
+            .. " GROUNDING RULE (critical): everything marked as known facts, news, standing or traffic in"
+            .. " this prompt is GROUND TRUTH — the real state of the world. You MAY deceive, bluff, deflect or"
+            .. " withhold IN CHARACTER about things you actually know here, when it fits your persona, your"
+            .. " trust in the player and your faction's interests. But you CANNOT cite specific records the"
+            .. " game has not given you — manifests, prices, exact quantities, schedules, names: for those,"
+            .. " deflect in character (offer to check, point to the trade terminal). Never present invented"
+            .. " specifics as data. If you chose to deceive the player this reply, also include"
+            .. ' "deceived":true in the JSON (they will not see this flag).' 
         -- #213: a self-generated persona (minted on the FIRST exchange, then stable) keeps this NPC's voice
         -- distinct and consistent across conversations. Persona IS part of the card checksum — tamper-proof.
         if type(card.persona) == "string" and card.persona ~= "" then
@@ -914,8 +1079,8 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
             sys = sys .. " Recent galactic news you are aware of: " .. table.concat(evLines, "; ")
                 .. ". You may reference these events but never invent others."
         end
-        -- top-K TIER-VISIBLE facts ride the prompt (extracted to VisibleFacts for unit testing)
-        local promptFacts = AI_Influence.VisibleFacts(card, tier, 8)
+        -- top-K facts ride the prompt: #226 RELEVANT-first when recall ran, weight order otherwise
+        local promptFacts = relevantFacts or AI_Influence.VisibleFacts(card, tier, 8)
         if #promptFacts > 0 then
             sys = sys .. " Facts you remember about the player: " .. table.concat(promptFacts, "; ") .. "."
         end
@@ -965,6 +1130,15 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 return
             end
             local reply, updates, topics, commitment, persona, order = AI_Influence.ParseStructuredReply(raw)
+            -- #228b grounded deception (Ken): NPCs may lie about what they KNOW; the choice is recorded
+            -- privately on the card so future catches have consequences (doc-01 lie-detection fuel).
+            if json and json.decode then
+                local okdc, objdc = pcall(json.decode, raw)
+                if okdc and type(objdc) == "table" and objdc.deceived == true then
+                    card.deceits = (tonumber(card.deceits) or 0) + 1
+                    log("npc chose deception (total " .. tostring(card.deceits) .. ") token=" .. tostring(token))
+                end
+            end
             -- #217: whitelist + ownership gate, then hand execution to MD (proven create_order lane)
             if order and AI_Influence.OrderAllowed(ctx, order) and AddUITriggeredEvent then
                 pcall(function() AddUITriggeredEvent("ai_influence", "player_order", { order = tostring(order) }) end)
@@ -1013,6 +1187,48 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 .. " facts=" .. tostring(#card.facts))
             if onReply then onReply(true, reply) end
         end)
+        end -- continueTurn
+        -- #226 dispatcher: embed the player's line (+ up to 8 not-yet-embedded memories, same call),
+        -- store vectors in the side card, recall the most RELEVANT memories; graceful fallback otherwise.
+        if #(card.imp or {}) >= 3 and json then
+            AI_Influence.LoadCard("aic_vec_" .. token, function(vecCard)
+                vecCard = (type(vecCard) == "table") and vecCard or { v = 3, turns = {}, facts = {}, imp = {}, aliases = {}, trust = 0 }
+                vecCard.vecs = vecCard.vecs or {}
+                local newTexts, newKeys = {}, {}
+                for _, m in ipairs(card.imp) do
+                    local k2 = AI_Influence.VecKey(m.t)
+                    if not vecCard.vecs[k2] and #newTexts < 8 then
+                        newTexts[#newTexts + 1] = m.t; newKeys[#newKeys + 1] = k2
+                    end
+                end
+                local input = { text }
+                for _, t2 in ipairs(newTexts) do input[#input + 1] = t2 end
+                AI_Influence.Embed(input, function(okE, vecs, emodel)
+                    local tier0 = AI_Influence.TrustTier(tonumber(card.trust) or 0)
+                    if okE and type(vecs) == "table" and vecs[1] then
+                        -- model switch invalidates every stored vector (cross-model cosine is meaningless)
+                        if vecCard.emodel and emodel and vecCard.emodel ~= emodel then
+                            log("embed model changed (" .. tostring(vecCard.emodel) .. " -> " .. tostring(emodel) .. "); invalidating stored vectors")
+                            vecCard.vecs = {}
+                        end
+                        vecCard.emodel = emodel
+                        for i2, k2 in ipairs(newKeys) do
+                            if vecs[i2 + 1] then vecCard.vecs[k2] = AI_Influence.QuantizeVec(vecs[i2 + 1]) end
+                        end
+                        AI_Influence.StoreCard("aic_vec_" .. token, vecCard)
+                        local rec = AI_Influence.SemanticRecall(card, tier0, vecCard, vecs[1], text, 6)
+                        log("semantic recall n=" .. tostring(#rec) .. " embedded_new=" .. tostring(#newKeys))
+                        continueTurn(#rec > 0 and rec or nil)
+                    else
+                        log("semantic recall FALLBACK (embed: " .. tostring(vecs) .. ")")
+                        local rec = AI_Influence.SemanticRecall(card, tier0, nil, nil, text, 6)
+                        continueTurn(#rec > 0 and rec or nil)
+                    end
+                end)
+            end)
+        else
+            continueTurn(nil)
+        end
     end)
 end
 
@@ -1226,6 +1442,23 @@ function AI_Influence.P2SelfTest()
     check("diplo_hold_zero", dh ~= nil and dh.delta == 0)
     check("diplo_reject_action", AI_Influence.ValidateDiploDecision('{"statement":"x","action":"declare_total_war","relation_delta":0.01}') == nil)
     check("diplo_reject_junk", AI_Influence.ValidateDiploDecision('not json at all') == nil)
+    -- #226 semantic recall pure checks
+    local bt = AI_Influence.B64Encode("hello!"); check("sem_b64", AI_Influence.B64Decode(bt) == "hello!")
+    local qv = AI_Influence.QuantizeVec({ 0.5, -0.25, 0.1 })
+    local dq = AI_Influence.DequantizeVec(qv)
+    check("sem_quant", dq ~= nil and math.abs(dq[1] - 0.5) < 0.01 and math.abs(dq[2] + 0.25) < 0.01)
+    check("sem_cosine", AI_Influence.Cosine({1,0,0},{1,0,0}) > 0.999 and AI_Influence.Cosine({1,0,0},{0,1,0}) < 0.001)
+    check("sem_overlap", AI_Influence.OverlapScore("deliver energy cells", "promised to deliver energy cells")
+        > AI_Influence.OverlapScore("deliver energy cells", "likes teladi tea"))
+    local rcard = { imp = { { t = "promised to deliver energy cells", i = 5, g = 0 },
+                           { t = "secret smuggling route", i = 9, g = 2 },
+                           { t = "likes teladi tea", i = 2, g = 0 } } }
+    local rr = AI_Influence.SemanticRecall(rcard, 0, nil, nil, "what about the energy cells delivery", 2)
+    check("sem_recall_fallback", #rr >= 1 and rr[1] == "promised to deliver energy cells")
+    local rr2 = AI_Influence.SemanticRecall(rcard, 0, nil, nil, "tell me the smuggling secret", 3)
+    local leaked = false
+    for _, t2 in ipairs(rr2) do if t2 == "secret smuggling route" then leaked = true end end
+    check("sem_recall_tiergate", leaked == false)   -- tier-0 must not surface the gated secret
     -- #224 aic_http pure checks (transport correctness without any network)
     local H = rawget(_G, "AIC_HTTP")
     check("http_present", H ~= nil)
@@ -1380,17 +1613,33 @@ end
 -- P1 proof scaffolding: flip true to re-arm the load-time probes (2 Player2 calls per game load).
 local P1_LOAD_PROBES = false
 -- P2 selftest: zero Player2 calls (pure Lua) — cheap enough to run on every load; flip off after #194.
-local P2_PROBES = false  -- #224 aic_http: verified in-game pass=87 fail=0 + live LLM traffic via built-in transport
+local P2_PROBES = false  -- #226 semantic recall: verified in-game pass=93 fail=0
+-- #226 rig PROVEN 2026-07-22: "semantic recall n=4 embedded_new=4" -> the NPC answered with the exact
+-- seeded promise ("You promised to deliver 500 energy cells") via Player2 /v1/embeddings + our transport.
+local RECALL_PROBE = false
+function AI_Influence.RecallProbe()
+    local ctx = { target = "Recall Probe Officer", faction = "teladi", role = "manager" }
+    local token = ctx.target .. "|" .. ctx.faction .. "|" .. ctx.role
+    local seed = { v = 3, turns = {}, facts = {}, imp = {}, aliases = {}, trust = 0 }
+    AI_Influence.AddCardFact(seed, "the player promised to deliver 500 energy cells", "player_claim", 8, "promise")
+    AI_Influence.AddCardFact(seed, "the player prefers hull parts contracts", "npc_claim", 4, "preference")
+    AI_Influence.AddCardFact(seed, "the player is a trusted associate of station command", "npc_claim", 6, "relationship")
+    AI_Influence.AddCardFact(seed, "the player dislikes long docking queues", "player_claim", 3, "preference")
+    AI_Influence.StoreCard(token, seed)
+    AI_Influence.SendDirectChat(ctx, "Remind me what I promised to deliver to you?", function(ok, reply)
+        log("RECALL_PROBE reply ok=" .. tostring(ok) .. " reply=" .. tostring(reply):sub(1, 120))
+    end)
+end
 -- #221 rig PROVEN 2026-07-22: full LLM-decides loop ran live — 'AIC DIPLO LLM-DECIDED teladi vs argon
 -- action=improve delta=0.04 rel -0.5 -> -0.46' (Player2 chose the action AND delta; validator clamped;
 -- real set_faction_relation moved the galaxy). DIPLO_CLEANUP below closes the seeded test event once.
 local DIPLO_PROBE = false
 local DIPLO_CLEANUP = false  -- test event closed 2026-07-22
--- #222 rig PROVEN 2026-07-22: full loop live — DeadAir-ported selection picked holyorder vs split
--- (galaxy-wide, strength 1686, fairness-churned), holyorder SPOKE FOR ITSELF, Player2 DECIDED
--- improve/+0.03, validator clamped, REAL relation crossed -0.0194 -> +0.0106. The Pair_tick (30min
--- checkinterval) now drives this permanently. Re-arm to re-test.
+-- U1 PROVEN 2026-07-22: full round lifecycle live — hatikvah vs freesplit, alternating speakers,
+-- "round 1 COMPLETE; analysis scheduled" -> "analysis: CONTINUE -> round 2"; legacy migration fired;
+-- failure lane wired. Re-arm to re-test.
 local PAIR_TEST = false
+local U1_CLEAN_STALE = false
 -- #217 rig: dispatch a patrol player_order through the REAL MD lane (falls back to a real player fight
 -- ship when no conversation NPC is in scope). Proven 2026-07-21: create_order landed on GVS-020
 -- 'Kestrel Vanguard' in Hewa's Twin I. #218 proven: all four verbs executed (patrol/hold=protect,
@@ -1452,6 +1701,7 @@ function AI_Influence.DirectProbe(userLine)
         pcall(AI_Influence.OnWorldEvent, "kind=crisis|a=Probe Station|b=Probe Sector|to=power_crisis")
     end
     if PERSONA_PROBE then pcall(AI_Influence.PersonaProbe) end
+    if RECALL_PROBE then pcall(AI_Influence.RecallProbe) end
     if DIPLO_PROBE and AddUITriggeredEvent then
         pcall(function() AddUITriggeredEvent("ai_influence", "diplo_open_test", { a = "teladi", b = "argon", kind = "tension" }) end)
         log("DIPLO_PROBE opened teladi/argon tension event")
@@ -1460,9 +1710,13 @@ function AI_Influence.DirectProbe(userLine)
         pcall(function() AddUITriggeredEvent("ai_influence", "diplo_close_test", { a = "teladi", b = "argon" }) end)
         log("DIPLO_CLEANUP closed the seeded test event")
     end
+    if U1_CLEAN_STALE and AddUITriggeredEvent then
+        for _, pr in ipairs({ {"split","pioneers"}, {"buccaneers","boron"}, {"holyorder","paranid"}, {"holyorder","split"} }) do
+            pcall(function() AddUITriggeredEvent("ai_influence", "diplo_close_test", { a = pr[1], b = pr[2] }) end)
+        end
+        log("U1_CLEAN_STALE closed soak-era events")
+    end
     if PAIR_TEST and AddUITriggeredEvent then
-        -- close the mis-keyed display-name event from the first #222 run, then select fresh
-        pcall(function() AddUITriggeredEvent("ai_influence", "diplo_close_test", { a = "Free Families", b = "Duke's Buccaneers" }) end)
         pcall(function() AddUITriggeredEvent("ai_influence", "diplo_pair_test", { go = "1" }) end)
         log("PAIR_TEST dispatched immediate pair selection")
     end

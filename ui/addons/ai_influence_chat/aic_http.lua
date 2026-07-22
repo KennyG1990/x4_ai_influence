@@ -24,7 +24,10 @@ local function initLibs()
     if not package.loaded["socket.core"] then
         local f, err = package.loadlib(BASEDIR .. "luasocket/core.dll", "luaopen_socket_core")
         if not f then log("core.dll load FAILED: " .. tostring(err)) return false end
-        package.loaded["socket.core"] = f()
+        local core = f()
+        package.loaded["socket.core"] = core
+        -- the vendored socket.lua (djfhe-namespaced upstream copy) requires this name instead:
+        package.loaded["luasocket.socket.core"] = core
     end
     local ok, s = pcall(require, "socket")
     if not ok then log("socket.lua load FAILED: " .. tostring(s)) return false end
@@ -120,8 +123,9 @@ local TIMEOUT_S = 30
 local Request = {}
 Request.__index = Request
 function M.new(method)
-    return setmetatable({ method = method or "GET", headers = {}, body = "", url = nil }, Request)
+    return setmetatable({ method = method or "GET", headers = {}, body = "", url = nil, timeout = TIMEOUT_S }, Request)
 end
+function Request:setTimeout(s) self.timeout = tonumber(s) or TIMEOUT_S return self end
 function Request:setUrl(u) self.url = u return self end
 function Request:addHeader(k, v) self.headers[k] = v return self end
 function Request:setBody(b)
@@ -141,7 +145,7 @@ function Request:send(cb)
         sock = sock, cb = cb, state = "connecting",
         payload = M.buildRequest(self.method, self.url, self.headers, self.body),
         sent = 0, buf = "", started = os and os.clock and os.clock() or 0,
-        deadline = (GetCurRealTime and GetCurRealTime() or 0) + TIMEOUT_S,
+        deadline = (GetCurRealTime and GetCurRealTime() or 0) + (self.timeout or TIMEOUT_S),
     }
 end
 
