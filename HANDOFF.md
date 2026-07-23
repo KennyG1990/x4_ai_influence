@@ -1,7 +1,7 @@
 # HANDOFF — x4_ai_influence (in-game MD/Lua side)
 
 > Updated 2026-07-01. Supersedes the 2026-06-30 version (which described the mid-UI-build state — that phase is DONE).
-> The authoritative cross-session memory is `x4_neural_link/ROADMAP.md`. The full project handoff is
+> The authoritative cross-session memory is `x4_ai_influence/docs/ROADMAP.md` (moved 2026-07-22; x4_neural_link is deprecated). The full project handoff is
 > `handoff-fable-2026-07-01.md` (architecture, workflow, gotchas) — read that first if you have it.
 
 ## State (2026-07-01)

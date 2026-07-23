@@ -130,9 +130,8 @@ We know how much players value their long-term save files. AI Influence is built
 ### 📋 What You Need
 
 1. **X4 Foundations** (v6.00 or newer).
-2. **Player2 Desktop AI App** (installed and running on your PC).
-3. The **X4 Neural Link** extension installed (manages the connection).
-4. The **djfhe_http** extension installed (allows X4 to communicate with the bridge).
+2. **Player2 Desktop AI App** (installed and running on your PC). That's it — the mod talks to
+   Player2 directly; no bridge, no extra extensions.
 
 ### 📥 Installation Steps
 
@@ -140,13 +139,12 @@ We know how much players value their long-term save files. AI Influence is built
    ```text
    X4 Foundations/extensions/x4_ai_influence
    ```
-2. Double-click `Start-Neural-Link.bat` in the `x4_neural_link` folder.
-3. Launch X4: Foundations.
-4. Talk to any faction representative, click **"Speak to AI"**, and start shaping the future of the galaxy!
+2. Launch X4: Foundations.
+3. Talk to any NPC or faction representative, click **"Speak to AI"**, and start shaping the future of the galaxy!
 
 ---
 
 ## ❓ Troubleshooting & Support
 
-- **The "Speak to AI" option is greyed out/not appearing:** Make sure both the Player2 App and the Neural Link bridge (`Start-Neural-Link.bat`) are running in the background before you launch X4.
+- **The "Speak to AI" option is greyed out/not appearing:** Make sure the Player2 App is running before you launch X4.
 - **The representative doesn't reply:** Ensure your Player2 account has "joules" (AI power) available. If you are out of joules, the mod will fall back to local dialogue options automatically.

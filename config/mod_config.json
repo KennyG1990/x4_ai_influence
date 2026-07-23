@@ -1,6 +1,5 @@
 {
   "mod_id": "x4_ai_influence",
-  "bridge_dependency": "x4_neural_link",
   "default_profile": "normal",
   "mvp_representative": {
     "actor_id": "argon_nerra",

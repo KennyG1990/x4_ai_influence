@@ -341,7 +341,8 @@ local BOND_GATE = {
 -- #217 doc-09: conversational fleet orders. Lua is the gate — an order is executed ONLY for a
 -- player-OWNED ship captain (MD grounds npc_owned) and ONLY from the whitelist. The LLM proposes; we verify.
 local PLAYER_ORDERS = { patrol = true, ["return"] = true, hold = true, attack = true, follow = true,
-    deploy = true, explore = true, trade = true, mine = true, dock = true, collect = true }   -- #262/#263/#264
+    deploy = true, explore = true, trade = true, mine = true, dock = true, collect = true,
+    deploy_sat = true, deploy_beacon = true, deploy_probe = true, rescue = true, trade_update = true }   -- #262/#263/#264/#284
 function AI_Influence.OrderAllowed(ctx, order)
     if type(ctx) ~= "table" then return false end
     if tostring(ctx.npc_owned or "") ~= "1" then return false end
@@ -541,6 +542,36 @@ function AI_Influence.LoadCard(token, callback)
     log("LoadCard token=" .. tostring(token) .. " (queued " .. tostring(#AI_Influence._pendingCards) .. ")")
 end
 
+-- #272: serialized read-modify-write for card mutations OUTSIDE the chat-turn lane (settlement,
+-- failure, close-flush). The LoadCard FIFO orders responses but gives no mutual exclusion - two
+-- lanes could load the same card, mutate copies, and last-StoreCard-wins (the instant-close race:
+-- settle reactions vs episode flush). WithCard chains mutators per token: one load-mutate-store
+-- completes before the next begins. Mutators receive a guaranteed table and must NOT StoreCard.
+AI_Influence._cardBusy = AI_Influence._cardBusy or {}
+AI_Influence._cardWaiters = AI_Influence._cardWaiters or {}
+function AI_Influence.WithCard(token, mutator)
+    token = tostring(token)
+    if AI_Influence._cardBusy[token] then
+        local w = AI_Influence._cardWaiters[token] or {}
+        w[#w + 1] = mutator
+        AI_Influence._cardWaiters[token] = w
+        log("WithCard queued behind busy token=" .. token)
+        return
+    end
+    AI_Influence._cardBusy[token] = true
+    AI_Influence.LoadCard(token, function(card)
+        card = (type(card) == "table") and card or newCard()
+        local ok, err = pcall(mutator, card)
+        if not ok then log("WithCard mutator error: " .. tostring(err)) end
+        AI_Influence.StoreCard(token, card)
+        AI_Influence._cardBusy[token] = nil
+        local w = AI_Influence._cardWaiters[token]
+        if w and #w > 0 then
+            AI_Influence.WithCard(token, table.remove(w, 1))
+        end
+    end)
+end
+
 -- MD -> Lua response: param is the stored JSON string ("" if none). v2: verify + migrate via
 -- DecodeCard; corrupt/future cards are quarantined (logged, fresh card handed to the caller).
 local function onCardLoaded(_, param)
@@ -586,16 +617,22 @@ function AI_Influence.PickInitiativeCandidate(idx, today)
     if type(idx) ~= "table" then return nil end
     today = tonumber(today) or 0
     local best = nil
+    local bestGr = nil
     for _, e in ipairs(idx) do
         local b = tonumber(e.b) or 0
         local neglected = today - (tonumber(e.bd) or 0)
         local sinceOut = today - (tonumber(e.id) or 0)
         local isInf = (tonumber(e.inf) or 0) == 1   -- #242: informants report in on a short leash
-        if ((b >= INIT_BOND_MIN and neglected >= INIT_NEGLECT_MIN) or (isInf and neglected >= 1)) and sinceOut >= INIT_COOLDOWN then
+        local aggrieved = (tonumber(e.gr) or 0) == 1
+        -- #272: creditors don't wait for bonds - an aggrieved NPC (grudge or unpaid debt) jumps
+        -- the queue and needs only a 1-day gap between dunning messages.
+        if aggrieved and sinceOut >= 1 then
+            if not bestGr or b > (tonumber(bestGr.b) or 0) then bestGr = e end
+        elseif ((b >= INIT_BOND_MIN and neglected >= INIT_NEGLECT_MIN) or (isInf and neglected >= 1)) and sinceOut >= INIT_COOLDOWN then
             if not best or b > (tonumber(best.b) or 0) then best = e end
         end
     end
-    return best
+    return bestGr or best
 end
 local function persistInitIndex()
     local c = newCard()
@@ -606,6 +643,25 @@ end
 function AI_Influence.NoteInteraction(token, ctx, card)
     AI_Influence._initIndex = AI_Influence.UpsertInitiativeEntry(AI_Influence._initIndex or {}, token, ctx, card)
     persistInitIndex()
+end
+
+-- #272: mark/unmark an NPC as AGGRIEVED (unresolved grudge or unpaid debt) in the initiative
+-- index - aggrieved NPCs jump the outreach queue and dun the player. Pre-hydration the card's
+-- own grudge/debt fields are the source of truth, so silently skipping is safe.
+function AI_Influence.FlagAggrieved(token, on, target)
+    local idx = AI_Influence._initIndex
+    if type(idx) ~= "table" then return end
+    local hit = nil
+    for _, e in ipairs(idx) do if tostring(e.tk) == tostring(token) then hit = e break end end
+    if not hit then
+        if (tonumber(on) or 0) == 0 then return end
+        hit = { tk = tostring(token), tg = tostring(target or ""), fid = "", b = 0, bd = 0, id = 0 }
+        idx[#idx + 1] = hit
+    end
+    hit.gr = (tonumber(on) or 0)
+    if target and tostring(target) ~= "" then hit.tg = tostring(target) end
+    persistInitIndex()
+    log("aggrieved flag=" .. tostring(hit.gr) .. " token=" .. tostring(token))
 end
 -- The periodic pass (MD Initiative_tick raises AIChat.initiative_tick). First tick after load hydrates the
 -- index from its card (merging any in-memory entries from chats that happened before hydration).
@@ -639,8 +695,30 @@ function AI_Influence.InitiativePass(todayOverride)
     AI_Influence.LoadCard(cand.tk, function(card)
         card = (type(card) == "table") and card or newCard()
         local gap = today - (tonumber(cand.bd) or 0)
+        local aggrieved = (tonumber(cand.gr) or 0) == 1
+        if aggrieved and type(card.grudge) ~= "table" and type(card.debt) ~= "table" then
+            -- #272: the wrong was resolved through another lane - drop the stale flag, skip quietly
+            cand.gr = 0
+            persistInitIndex()
+            log("initiative: aggrieved flag stale for " .. tostring(cand.tg) .. " - cleared")
+            return
+        end
         local sys
-        if card.informant then
+        if aggrieved then
+            -- #272: the DUNNING message - the bill comes due even if the player never comes back.
+            local wrong
+            if type(card.debt) == "table" then
+                wrong = "The player agreed to pay you " .. tostring(card.debt.amt) .. " credits for "
+                    .. tostring(card.debt.why) .. " and walked away without paying - the money is still owed"
+            else
+                wrong = "The player paid you only " .. tostring(card.grudge.paid) .. " of the "
+                    .. tostring(card.grudge.asked) .. " credits agreed for " .. tostring(card.grudge.why)
+            end
+            sys = "You are " .. tostring(cand.tg or "a contact") .. " of the " .. tostring(cand.fid or "argon")
+                .. " faction in the X4 galaxy. " .. wrong .. ". Your people are " .. AI_Influence.CultureDescriptor(cand.fid)
+                .. ". Write ONE short in-character message (1-2 sentences) to the player demanding they make"
+                .. " it right. Respond with ONLY the message text."
+        elseif card.informant then
             -- #242: INFORMANT DROP - the poached contact leaks something REAL about their employer,
             -- grounded on the ledger through THEIR faction's eligibility view. Never invented.
             local known = AI_Influence.WorldEventLines(AI_Influence._worldEvents or {}, 3, { faction = cand.fid, role = "" })
@@ -669,7 +747,8 @@ function AI_Influence.InitiativePass(todayOverride)
                 pcall(function()
                     AddUITriggeredEvent("ai_influence", "comms_incoming", {
                         title = "Personal message from " .. tostring(cand.tg),
-                        body = tostring(reply), sender = tostring(cand.tg), priority = "low",
+                        body = tostring(reply), sender = tostring(cand.tg),
+                        priority = ((tonumber(cand.gr) or 0) == 1) and "high" or "low",
                     })
                 end)
             end
@@ -748,6 +827,7 @@ function AI_Influence.AddWorldEvent(evts, kind, a, b, to, day, extra)
     if type(extra) == "table" then
         if extra.i ~= nil then e.i = tonumber(extra.i) end
         if extra.ap ~= nil then e.ap = tostring(extra.ap) end
+        if extra.tt ~= nil and extra.tt ~= "" then e.tt = tostring(extra.tt) end   -- #269: insider truth
     end
     evts[#evts + 1] = e
     while #evts > WORLDEV_CAP do table.remove(evts, 1) end
@@ -769,9 +849,16 @@ function AI_Influence.WorldEventLines(evts, k, viewer)
             end
         elseif e.k == "war" then out[#out + 1] = "war has broken out between " .. e.a .. " and " .. e.b
         elseif e.k == "peace" then out[#out + 1] = "the war between " .. e.a .. " and " .. e.b .. " has ended"
-        elseif e.k == "contagion" or e.k == "security" or e.k == "combat" then
-            -- U2 (#240)/#254: narrative kinds carry their whole text in the payload
-            out[#out + 1] = e.to
+        elseif e.k == "contagion" or e.k == "security" or e.k == "combat" or e.k == "pact" then
+            -- U2 (#240)/#254: narrative kinds carry their whole text in the payload.
+            -- #269: a deceptive pact serves the TRUTH to the signing factions' own people
+            -- and the LIE to everyone else - which version you hear depends on who you ask.
+            local vfac2 = (type(viewer) == "table") and tostring(viewer.faction or "") or ""
+            if e.tt and vfac2 ~= "" and (e.a == vfac2 or e.b == vfac2) then
+                out[#out + 1] = e.tt
+            else
+                out[#out + 1] = e.to
+            end
         elseif tostring(e.k):sub(1, 4) == "dyn_" then
             -- U2 (#240): generated-event eligibility (Bannerlord spread port): involved faction
             -- (or "all") passing the role filter knows; importance >= 8 knows REGARDLESS.
@@ -794,14 +881,14 @@ function AI_Influence.HydrateWorldEvents()
     AI_Influence.LoadCard(WORLDEV_TOKEN, function(card)
         local stored = (type(card) == "table" and type(card.evts) == "table") and card.evts or {}
         local mem = AI_Influence._worldEvents or {}
-        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap }) end
+        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap, tt = e.tt }) end
         AI_Influence._worldEvents = stored
         log("world-events ledger hydrated n=" .. tostring(#stored))
     end)
 end
 function AI_Influence.OnWorldEvent(param)
     local g = AI_Influence.parseBackendConfig(param)  -- same k=v| wire format
-    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay())
+    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay(), { tt = g.tt })
     persistWorldEvents()
     log("world event recorded kind=" .. tostring(g.kind) .. " n=" .. tostring(#AI_Influence._worldEvents))
 end
@@ -1118,8 +1205,24 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         sys = sys .. " REAL PAYMENTS: when you and the player have explicitly AGREED on a payment from them"
             .. ' to you, include "transfer":{"credits":<whole number>,"direction":"to_npc","for":"<what it'
             .. ' pays for>"} in the JSON. The game then asks the player to confirm and moves REAL credits.'
-            .. " Never claim a payment happened unless a [Transfer complete] note appears in the conversation."
-            .. " If a [Transfer complete] note for a payment ALREADY appears, that deal is SETTLED - never propose the same transfer again."
+            .. " CRITICAL: that field is the ONLY mechanism that can move money - the player cannot send"
+            .. " credits on their own. If a payment has been agreed but no [Transfer complete] note has"
+            .. " appeared yet, you MUST include the transfer field (again if needed) to open the payment"
+            .. " window; waiting without it means the money can never arrive."
+        sys = sys .. ' ROLEPLAY ITEMS: when the story warrants physically handing the player something -'
+            .. ' a letter, data chip, dossier, signed contract or keepsake - include'
+            .. ' "give_item":{"kind":"letter|data_chip|dossier|contract|keepsake","title":"<up to 8 words>",'
+            .. '"text":"<1-2 sentences of what it contains>"} in the JSON. A REAL item then lands in the'
+            .. " player inventory and the contents are logged. Give items sparingly, only with an"
+            .. " in-story reason, and never invent contents you could not know."
+            .. " Never claim a payment happened unless a [Transfer complete] note appears in the conversation -"
+            .. " if no such note appeared, the money has NOT arrived; say so plainly if asked."
+            .. " The note states the EXACT amount received. If it is less than what was agreed you were"
+            .. " SHORT-PAID: react in character to the shortfall and never pretend you received the full amount."
+            .. " A note showing the FULL agreed amount means that deal is SETTLED - never propose the same"
+            .. " transfer again. A note showing LESS than the agreed amount is NOT settlement: the shortfall"
+            .. " remains collectible, and when the player offers to make it right you MUST propose a NEW"
+            .. " transfer for exactly the remaining amount."
             .. ' When a payment buys trade information, add "deliverable":"trade_summary" to the transfer -'
             .. " the game will then compile a REAL trade dossier from this station's actual stock and put it"
             .. " in the player's logbook. If the player ALREADY paid for information and asks for it, include"
@@ -1206,19 +1309,58 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 .. ' your role, faction and culture - where you served, what shaped you>" and'
                 .. ' "quirks":"<1-2 short habits or verbal tics, comma-separated>" in the JSON.'
         end
+        -- #272: unresolved wrongs ride EVERY prompt, and a fresh conversation OPENS with the
+        -- confrontation - closing the window is not an escape hatch (doc 05: "the past never resets").
+        local freshSession = (AI_Influence._session == nil or AI_Influence._session.token ~= token)
+        if type(card.grudge) == "table" then
+            sys = sys .. " UNRESOLVED GRIEVANCE: the player paid you only " .. tostring(card.grudge.paid)
+                .. " of the " .. tostring(card.grudge.asked) .. " credits agreed for " .. tostring(card.grudge.why)
+                .. " (day " .. tostring(card.grudge.day or 0) .. "). You have not forgiven this - let it color your tone."
+            if freshSession then
+                sys = sys .. " OPEN this conversation by confronting the player about it before anything else,"
+                    .. " in your own voice and culture."
+            end
+            local grem = math.max(1, (tonumber(card.grudge.asked) or 0) - (tonumber(card.grudge.paid) or 0))
+            sys = sys .. " To collect, include the transfer field for the remaining " .. tostring(grem)
+                .. " credits when the player offers payment."
+            sys = sys .. ' If - and ONLY if - the player genuinely makes amends this exchange (covers the'
+                .. ' shortfall, or truly moves you), include "grudge_resolved":true in the JSON.'
+        end
+        if type(card.debt) == "table" then
+            sys = sys .. " OUTSTANDING DEBT: the player agreed to pay you " .. tostring(card.debt.amt)
+                .. " credits for " .. tostring(card.debt.why) .. " (day " .. tostring(card.debt.day or 0)
+                .. ") and left without paying. That money is still owed to you."
+            if freshSession then
+                sys = sys .. " Demand settlement early in this conversation."
+            end
+            sys = sys .. " To collect, include the transfer field for the owed amount so the payment window"
+                .. ' opens. If you decide - in character - to write the debt off, include "debt_forgiven":true'
+                .. " in the JSON."
+        end
         -- #217: an OWNED captain may take a patrol order through conversation (single-call pattern)
         if tostring(ctx.npc_owned or "") == "1" and ctx.npc_ship and tostring(ctx.npc_ship) ~= "" then
             sys = sys .. ' You captain the player!s ship ' .. tostring(ctx.npc_ship) .. '. If the player has'
                 .. ' CLEARLY given you one of these orders in this exchange, also include'
                 .. ' "orders":[{"verb":"patrol|return|hold|attack|follow|deploy|explore|trade|mine|dock'
-                .. '|collect","sector":"<EXACT sector name, or omit for the current sector>"}] in the JSON'
+                .. '|collect|deploy_sat|deploy_beacon|deploy_probe|rescue|trade_update",'
+                .. '"sector":"<EXACT sector name, or omit for the current sector>",'
+                .. '"until":<minutes 5-120, ONLY when the player implied a duration>}] in the JSON'
                 .. ' - up to 3 steps, executed strictly IN SEQUENCE (the ship finishes step 1, then does'
                 .. ' step 2...). A multi-part instruction like "patrol Hatikvah!s Choice, then dock in'
                 .. ' Argon Prime" becomes two steps with their sectors. Verbs: patrol/hold (guard zone),'
                 .. ' attack (hostiles there), trade/mine (automated work - refuse in character if your ship'
                 .. ' is unsuited), dock (dock+wait), collect (sweep cargo), explore (wander), follow (the'
                 .. ' player), return (to the player!s area), deploy (whole battlegroup pickets - current'
-                .. ' sector only). Acknowledge the FULL sequence in your reply.'
+                .. ' sector only). deploy_sat/deploy_beacon/deploy_probe LAUNCH REAL deployables from'
+                .. ' your racks (for these verbs "until" = how many units, default 1) - the order is'
+                .. ' REFUSED if your racks are empty, so never promise hardware you may not carry;'
+                .. ' hedge honestly ("if we have stock aboard"). rescue sweeps the area for stranded'
+                .. ' spacers of your faction; trade_update revisits known stations for fresh prices.'
+                .. ' Every open-ended step (patrol/hold/explore/trade/mine) runs on a'
+                .. ' TIME BUDGET - the duration the player asked for, or a sensible default (patrol 20m,'
+                .. ' hold 15m, explore 30m, trade/mine 60m) - then the ship MOVES ON to the next step.'
+                .. ' Acknowledge the FULL sequence in your reply and STATE each step!s end condition'
+                .. ' ("...patrol for 30 minutes, then dock at...").'
                 .. ' CRITICAL: these are the ONLY ship actions that physically exist - if the player asks for'
                 .. ' anything else, do NOT promise it; say plainly what you CAN do instead. A promise without'
                 .. ' the order field is a lie to your commander.'
@@ -1257,6 +1399,41 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                 if okdc and type(objdc) == "table" and objdc.deceived == true then
                     card.deceits = (tonumber(card.deceits) or 0) + 1
                     log("npc chose deception (total " .. tostring(card.deceits) .. ") token=" .. tostring(token))
+                end
+                -- #272: the NPC decides (in character) that amends were made / the debt is written off
+                if okdc and type(objdc) == "table" and objdc.grudge_resolved == true and type(card.grudge) == "table" then
+                    card.grudge = nil
+                    AI_Influence.AddCardFact(card, "accepted the player's amends and let the payment grievance go", "npc_claim", 14, "relationship")
+                    AI_Influence.FlagAggrieved(token, 0)
+                    log("grudge RESOLVED by npc choice token=" .. tostring(token))
+                end
+                if okdc and type(objdc) == "table" and objdc.debt_forgiven == true and type(card.debt) == "table" then
+                    AI_Influence.AddCardFact(card, "chose to forgive the player's outstanding debt of " .. tostring(card.debt.amt) .. " credits", "npc_claim", 14, "relationship")
+                    card.debt = nil
+                    AI_Influence.FlagAggrieved(token, 0)
+                    log("debt FORGIVEN by npc choice token=" .. tostring(token))
+                end
+                -- #280: roleplay items - a REAL inventory item; flavor lives on the card + logbook
+                if okdc and type(objdc) == "table" and type(objdc.give_item) == "table" then
+                    local gi = objdc.give_item
+                    local GI_KINDS = { letter = true, data_chip = true, dossier = true, contract = true, keepsake = true }
+                    local gkind = tostring(gi.kind or "")
+                    if GI_KINDS[gkind] then
+                        local gtitle = tostring(gi.title or "Untitled"):sub(1, 60)
+                        local gbody = tostring(gi.text or ""):sub(1, 200)
+                        if AddUITriggeredEvent then
+                            pcall(function() AddUITriggeredEvent("ai_influence", "give_item", { kind = gkind, title = gtitle, text = gbody }) end)
+                        end
+                        AI_Influence.AddCardFact(card, "gave the player a " .. gkind .. " titled '" .. gtitle .. "'" .. ((gbody ~= "") and (" - " .. gbody) or ""), "npc_claim", 14, "relationship")
+                        local tmg = rawget(_G, "X4_Terminal_Menu")
+                        if tmg and tmg.currentContext and tostring(tmg.currentContext.target) == tostring(ctx.target) then
+                            tmg.history = tmg.history or {}
+                            table.insert(tmg.history, { role = "assistant", text = "[You receive: " .. gtitle .. " (" .. gkind .. ").]", err = true })
+                        end
+                        log("ITEM given kind=" .. gkind .. " title=" .. gtitle)
+                    else
+                        log("ITEM rejected unknown kind=" .. gkind)
+                    end
                 end
             end
             -- U-D1: the ENGINE owns the check verdict - recompute from the precomputed outcome table,
@@ -1364,7 +1541,7 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                             why = nil
                         end
                         if why then
-                        AI_Influence._pendingTransfer = { token = token, amt = amt, why = why, target = tostring(ctx.target) }
+                        AI_Influence._pendingTransfer = { token = token, amt = amt, asked = amt, why = why, target = tostring(ctx.target) }
                         local tmt = rawget(_G, "X4_Terminal_Menu")
                         if tmt and tostring(tmt.currentContext and tmt.currentContext.target) == tostring(ctx.target) then
                             tmt._pendingAction = { control = "aic_transfer", credits = amt, why = why, deliverable = dlv }
@@ -1436,6 +1613,9 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                             payload.n = payload.n + 1
                             payload["v" .. payload.n] = tostring(step.verb)
                             payload["s" .. payload.n] = tostring(step.sector or ""):sub(1, 40)
+                            -- #282: per-step time budget (minutes) - the END STATE the engine enforces
+                            local mins = tonumber(step["until"]) or 0
+                            payload["u" .. payload.n] = (mins > 0) and math.floor(math.max(5, math.min(120, mins))) or 0
                         end
                     end
                     if payload.n > 0 then
@@ -1881,65 +2061,70 @@ function AI_Influence.ContagionAnnounce(st, text)
     end
     log("CONTAGION " .. tostring(st.phase or "clear") .. ": " .. text)
 end
--- #253: outbreak start - ONE code path shared by the natural roll and "sim outbreak"
+-- #274: seeding is MD-side now (random civilized station -> Plague.$Sites registry).
+-- Name kept so 'sim outbreak' keeps working; overrides are obsolete (MD picks galaxy-wide).
 function AI_Influence.ContagionStart(secOverride, facOverride)
-    local st = (type(AI_Influence._contagion) == "table") and AI_Influence._contagion or {}
-    AI_Influence._contagion = st
-    local sec = tostring(secOverride or AI_Influence._lastPsector or "")
-    if sec == "" then log("contagion start: no grounded sector yet (talk to someone first)") return end
-    st.active = true
-    st.phase = "outbreak"
-    st.d0 = gameDay()
-    st.sector = sec
-    st.fac = tostring(facOverride or AI_Influence._lastPFaction or "argon")
-    AI_Influence.ContagionAnnounce(st, "A fast-moving pathogen has broken out aboard stations in " .. sec .. ". Authorities are mobilizing quarantine measures.")
-    AI_Influence.MintContract("job=cg_" .. tostring(gameDay()) .. "|faction=" .. st.fac .. "|reward=180000|verb=patrol|sector=" .. sec
-        .. "|title=Quarantine Support Patrol|summary=Patrol the quarantine perimeter in " .. sec .. " while relief convoys move in.")
-    AI_Influence.ContagionPersist(st)
+    if AI_Influence.PLAGUE_ENABLED == false then log("plague disabled - seed ignored") return end
+    if AddUITriggeredEvent then
+        pcall(function() AddUITriggeredEvent("ai_influence", "plague_seed", { day = gameDay() }) end)
+        log("plague seed dispatched (MD registry)")
+    end
 end
 function AI_Influence.ContagionTick()
-    local st = AI_Influence._contagion
-    if st == nil then
-        AI_Influence._contagion = false
-        AI_Influence.LoadCard("aic_contagion", function(card)
-            AI_Influence._contagion = (type(card) == "table" and type(card.cg) == "table") and card.cg or {}
-            log("contagion state hydrated active=" .. tostring(AI_Influence._contagion.active == true))
-        end)
-        return
-    end
-    if st == false then return end
+    -- #274: the plague CLOCK. MD owns the site registry (components, strikes, spread);
+    -- Lua forwards cadence, rolls natural ignition, and gates the toggle.
+    if AI_Influence.PLAGUE_ENABLED == false then return end
     local today = gameDay()
-    if st.active then
-        local age = today - (tonumber(st.d0) or today)
-        if st.phase == "outbreak" and age >= 2 then
-            st.phase = "peak"
-            AI_Influence.ContagionAnnounce(st, "The outbreak in " .. tostring(st.sector) .. " has reached its peak; medical services are overwhelmed and dock delays mount.")
-        elseif st.phase == "peak" and age >= 4 then
-            st.phase = "contained"
-            AI_Influence.ContagionAnnounce(st, "Quarantine efforts in " .. tostring(st.sector) .. " are taking hold; the outbreak is contained.")
-        elseif st.phase == "contained" and age >= 6 then
-            st.active = false
-            st.phase = "clear"
-            AI_Influence.ContagionAnnounce(st, "Health authorities declare " .. tostring(st.sector) .. " clear. Traffic restrictions lifted.")
-        end
-        AI_Influence.ContagionPersist(st)
-        return
+    if AddUITriggeredEvent then
+        pcall(function() AddUITriggeredEvent("ai_influence", "plague_tick2", { day = today }) end)
     end
-    -- no active outbreak: rare deterministic start roll (~1-in-40 hour-ticks), near the player
+    -- natural ignition: deterministic ~1-in-40 ticks; MD ignores the seed while sites are active
     AI_Influence._cgTicks = (AI_Influence._cgTicks or 0) + 1
-    local sec = tostring(AI_Influence._lastPsector or "")
     local h = 5381
     local seedstr = "cg|" .. tostring(today) .. "|" .. tostring(AI_Influence._cgTicks)
     for i = 1, #seedstr do h = (h * 33 + string.byte(seedstr, i)) % 4294967296 end
     if h % 40 ~= 0 then return end
-    -- #256: the outbreak ignites ANYWHERE - MD picks a random civilized station galaxy-wide and
-    -- answers on AIChat.contagion_at; the player-local start remains only as the no-MD fallback.
-    if AddUITriggeredEvent then
-        pcall(function() AddUITriggeredEvent("ai_influence", "contagion_seek", {}) end)
-        log("contagion seek dispatched (galaxy-wide placement)")
-    else
-        AI_Influence.ContagionStart(sec)
-    end
+    AI_Influence.ContagionStart()
+end
+
+-- #268: THE TRADE COUNCIL - the LLM negotiates a supply pact between two allied factions;
+-- the engine validated the need (real shortage) and the surplus (real stock) BEFORE asking.
+function AI_Influence.TradeCouncil(param)
+    if not (json and json.decode) then log("trade council: json not ready") return end
+    local g = AI_Influence.parseBackendConfig(param)
+    if not (g and g.a and g.b) then return end
+    local sys = "You are the joint TRADE COUNCIL of two X4 factions. Faction '" .. tostring(g.a)
+        .. "' faces a real shortage of " .. tostring(g.ware) .. " at its station " .. tostring(g.need)
+        .. " (severity " .. tostring(g.sev) .. "/100). Its ally, faction '" .. tostring(g.b)
+        .. "', holds a genuine surplus at " .. tostring(g.have) .. ". Their relation is " .. tostring(g.rel)
+        .. " (0 neutral .. 1 allied). As BOTH factions' negotiators, decide whether the ally supplies the"
+        .. " shortage, weighing politics: goodwill, precedent, dependency, what is owed in return."
+        .. ' You may also choose STRATEGIC DECEPTION: publicly announce a FALSE route or cargo (to'
+        .. " bait raiders and rivals) while the real deliveries run quietly - your own people will know"
+        .. " the truth; outsiders will not. The cargo itself is never falsified, only the announcement."
+        .. ' Respond STRICT JSON: {"agree":true|false,"quantity":<500-5000>,"concession":'
+        .. '"credits|goodwill|reciprocal_favor","statement":"<1-2 sentence joint public announcement>",'
+        .. '"deceive":true|false,"false_statement":"<the misleading public version, only if deceive>"}'
+    AI_Influence.SendDirect({ { role = "system", content = sys } },
+        { max_tokens = 180, response_format = { type = "json_object" } },
+    function(ok, raw)
+        if not ok then log("trade council call failed (MD times out)") return end
+        local okj, obj = pcall(json.decode, raw)
+        if not (okj and type(obj) == "table") then log("trade council unparseable") return end
+        local agree = (obj.agree == true)
+        local qty = math.max(500, math.min(5000, math.floor(tonumber(obj.quantity) or 1000)))
+        local conc = tostring(obj.concession or "goodwill")
+        if conc ~= "credits" and conc ~= "goodwill" and conc ~= "reciprocal_favor" then conc = "goodwill" end
+        local stmt = tostring(obj.statement or ""):sub(1, 220)
+        local dcv = (obj.deceive == true) and type(obj.false_statement) == "string" and obj.false_statement ~= ""
+        local fstmt = dcv and tostring(obj.false_statement):sub(1, 220) or nil
+        if AddUITriggeredEvent then
+            pcall(function() AddUITriggeredEvent("ai_influence", "trade_pact",
+                { agree = agree, quantity = qty, concession = conc, statement = stmt,
+                  deceive = dcv or nil, false_statement = fstmt }) end)
+        end
+        log("TRADE COUNCIL verdict agree=" .. tostring(agree) .. " qty=" .. qty .. " conc=" .. conc .. " (" .. tostring(g.a) .. " <- " .. tostring(g.b) .. ")")
+    end)
 end
 
 -- RH-1: build the wheel-suggestions event table {n, l1.., t1..} from reply-piggybacked topics
@@ -3561,7 +3746,7 @@ function AI_Influence.ReadNpcSkills(component)
         log("A3b probe => raw=" .. tostring(component) .. " idcode=" .. f("idcode")
             .. " name=" .. f("name") .. " owner=" .. f("owner")
             .. " macro=" .. f("macro") .. " code=" .. f("code") .. " class=" .. f("class")
-            .. " container=" .. f("container") .. " commander=" .. f("commander") .. " sector=" .. f("sector"))
+            .. " container=" .. f("container") .. " sector=" .. f("sector"))
     end)
     local skills = nil
     pcall(function()
@@ -3820,6 +4005,7 @@ local function init()
         log("intel delivered nWares=" .. tostring(nWares))
     end)
     RegisterEvent("AIChat.diplo_analyze", function(_, param) pcall(AI_Influence.DiploAnalyze, param) end)
+    RegisterEvent("AIChat.trade_council", function(_, param) pcall(AI_Influence.TradeCouncil, param) end)
     -- #259: peace withdraws the pair's war-effort contract (MD raise -> the proven withdraw wire)
     RegisterEvent("AIChat.contract_withdraw_shim", function(_, job)
         if AddUITriggeredEvent and job and tostring(job) ~= "" then
@@ -3832,28 +4018,184 @@ local function init()
         local g = AI_Influence.parseBackendConfig(param)
         if g and g.sector then pcall(AI_Influence.ContagionStart, g.sector, g.faction) end
     end)
+    -- #274: MD announces plague lifecycle events; Lua narrates (ledger + advisory) and mints
+    -- the quarantine patrol on the initial outbreak. MD owns the registry + workforce strikes.
+    RegisterEvent("AIChat.plague_event", function(_, param)
+        local g = AI_Influence.parseBackendConfig(param)
+        if not g or not g.k then return end
+        local s = tostring(g.s or "an outlying station")
+        local sec = tostring(g.sec or "")
+        local where = s
+        if sec ~= "" and sec ~= "?" then where = s .. " in " .. sec end
+        local text
+        if g.k == "outbreak" then
+            text = "A fast-moving pathogen has broken out aboard " .. where .. ". Authorities are mobilizing quarantine measures."
+        elseif g.k == "spread" then
+            text = "The pathogen has jumped to " .. where .. ". Health authorities widen the quarantine cordon."
+        elseif g.k == "peak" then
+            text = "The outbreak at " .. where .. " has reached its peak; medical services are overwhelmed and station output is suffering."
+        elseif g.k == "contained" then
+            text = "Quarantine efforts at " .. where .. " are taking hold; the outbreak is contained."
+        elseif g.k == "sitecleared" then
+            text = "Health authorities declare " .. s .. " clear of the pathogen."
+        elseif g.k == "allclear" then
+            text = "The epidemic is over: all quarantine restrictions are lifted galaxy-wide."
+        end
+        if not text then return end
+        AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "contagion", tostring(g.f or ""), "", text, gameDay())
+        persistWorldEvents()
+        if AddUITriggeredEvent then
+            pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
+                title = "Health Advisory", body = text, sender = "Sector Health Authority", priority = "low" }) end)
+        end
+        if g.k == "outbreak" and sec ~= "" and sec ~= "?" then
+            AI_Influence.MintContract("job=cg_" .. tostring(gameDay()) .. "|faction=" .. tostring(g.f or "argon") .. "|reward=180000|verb=patrol|sector=" .. sec
+                .. "|title=Quarantine Support Patrol|summary=Patrol the quarantine perimeter in " .. sec .. " while relief convoys move in.")
+        end
+        log("PLAGUE " .. tostring(g.k) .. ": " .. text)
+    end)
+    -- #283: the WAR DESK - engine-verified front losses become ONE written dispatch. Named
+    -- fallen officers are invented (culture-fitting) but their deaths ride real capital losses,
+    -- and the ledger remembers them: the dead stay dead in future conversations.
+    RegisterEvent("AIChat.war_dispatch", function(_, param)
+        -- lazy-json gotcha (#283 fix): a fresh reload's first dispatch can arrive before ANY lane
+        -- has initialized json - load it the house way instead of silently bailing
+        if not (json and json.decode) then ensureDjfhe() end
+        if not (json and json.decode) then log("WARDESK: json not ready") return end
+        local ls = tostring(param or ""):match("^losses=(.*)$") or ""
+        local parts, tot = {}, 0
+        local hardest, hmax = "", 0
+        for fid, n in ls:gmatch("([%w]+)=(%d+)") do
+            local c = tonumber(n) or 0
+            parts[#parts + 1] = fid .. " lost " .. c .. " warships"
+            tot = tot + c
+            if c > hmax then hmax = c; hardest = fid end
+        end
+        local evts = AI_Influence._worldEvents or {}
+        local ctxl = {}
+        for i = math.max(1, #evts - 7), #evts do
+            local e = evts[i]
+            if e then ctxl[#ctxl + 1] = "- " .. tostring(e.to) end
+        end
+        local datum
+        if #parts > 0 then
+            datum = table.concat(parts, "; ")
+        else
+            datum = "no significant fleet losses this cycle - the fronts are quiet"
+        end
+        local sys = "You are the war desk of a galactic news service in the X4 universe (faction ids:"
+            .. " argon, antigone, teladi, ministry, paranid, holyorder, split, freesplit, xenon, khaak,"
+            .. " scaleplate, buccaneers, pioneers, hatikvah, boron, terran)."
+            .. " THIS CYCLE!S VERIFIED FRONT DATA (ground truth, engine-measured): " .. datum .. "."
+            .. " RECENT CONTEXT (history - build on it, never contradict it):\n" .. table.concat(ctxl, "\n")
+            .. "\nWrite ONE war dispatch: 4-6 sentences, concrete and human - momentum, cost, what it"
+            .. " means for ordinary spacers. Name sectors ONLY if they appear in the context above."
+            .. " If any single faction lost 10 or more warships, include the death of ONE commanding"
+            .. " officer (invent a culturally fitting name for that faction, rank commodore or admiral)"
+            .. " lost with a capital ship."
+            .. ' Return STRICT JSON: {"title":"<10-50 chars, no faction ids>","dispatch":"<the piece>",'
+            .. '"fallen":"<officer name, or empty string>","faction":"<hardest-hit faction id>"}'
+        log("WARDESK generating (total losses " .. tot .. ")")
+        AI_Influence.SendDirect({ { role = "system", content = sys } },
+            { max_tokens = 380, response_format = { type = "json_object" } },
+        function(ok, raw)
+            if not ok then log("wardesk call failed") return end
+            local okj, obj = pcall(json.decode, raw)
+            if not (okj and type(obj) == "table") then log("WARDESK rejected: unparseable") return end
+            local title = tostring(obj.title or ""):sub(1, 50)
+            local body = tostring(obj.dispatch or ""):sub(1, 600)
+            if #title < 5 or #body < 60 then log("WARDESK rejected: too short") return end
+            local fal = tostring(obj.fallen or ""):sub(1, 40)
+            local ffid = tostring(obj.faction or hardest):lower():sub(1, 24)
+            writeToLogbook("War Dispatch - " .. title, body)
+            AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "combat", ffid, "", title .. ": " .. body:sub(1, 200), gameDay())
+            persistWorldEvents()
+            if fal ~= "" then
+                AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents, "combat", ffid, "", "Fallen in action: " .. fal .. ", lost with their ship on the " .. ffid .. " front", gameDay())
+                persistWorldEvents()
+            end
+            if AddUITriggeredEvent then
+                pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
+                    title = "War Dispatch - " .. title, body = body, sender = "GNN War Desk", priority = "low" }) end)
+            end
+            log("WARDESK published: " .. title .. ((fal ~= "") and (" (fallen: " .. fal .. ")") or ""))
+        end)
+    end)
     -- #243: MD pushes the persisted toggles on every load; the chat-box commands persist back
     RegisterEvent("AIChat.toggles_config", function(_, param)
         local g = AI_Influence.parseBackendConfig(param)
         if g then
             AI_Influence.DND_ENABLED = (tostring(g.dnd) ~= "0")
             AI_Influence.OBITS_ENABLED = (tostring(g.obits) ~= "0")
-            log("toggles applied dnd=" .. tostring(AI_Influence.DND_ENABLED) .. " obits=" .. tostring(AI_Influence.OBITS_ENABLED))
+            if g.plague ~= nil then AI_Influence.PLAGUE_ENABLED = (tostring(g.plague) ~= "0") end
+            log("toggles applied dnd=" .. tostring(AI_Influence.DND_ENABLED) .. " obits=" .. tostring(AI_Influence.OBITS_ENABLED) .. " plague=" .. tostring(AI_Influence.PLAGUE_ENABLED ~= false))
         end
     end)
-    RegisterEvent("AIChat.transfer_done", function()
+    RegisterEvent("AIChat.transfer_done", function(_, paidParam)
         local pt = AI_Influence._pendingTransfer; AI_Influence._pendingTransfer = nil
         if not pt then return end
+        -- #270: the player chose the ACTUAL amount; MD echoes it back - react to the delta
+        local paid = tonumber(paidParam) or pt.amt
+        local asked = tonumber(pt.asked) or pt.amt
+        pt.amt = paid
         AI_Influence._lastPaid = pt
         AI_Influence._settled = AI_Influence._settled or {}
-        AI_Influence._settled[pt.token .. "|" .. pt.amt .. "|" .. pt.why] = true
+        AI_Influence._settled[pt.token .. "|" .. asked .. "|" .. pt.why] = true
         if AI_Influence._session and AI_Influence._session.token == pt.token then
-            AI_Influence._session.paid = (AI_Influence._session.paid or 0) + (tonumber(pt.amt) or 0)
+            AI_Influence._session.paid = (AI_Influence._session.paid or 0) + paid
         end
-        AI_Influence.LoadCard(pt.token, function(card)
-            card = (type(card) == "table") and card or newCard()
-            AI_Influence.AddCardFact(card, "received a confirmed payment of " .. pt.amt .. " credits from the player for " .. pt.why, "npc_claim", 15, "promise")
-            AI_Influence.StoreCard(pt.token, card)
+        AI_Influence.WithCard(pt.token, function(card)
+            -- #271: the settle note must enter the LLM-VISIBLE conversation (card.turns), not just
+            -- the display plate - the payment rule keys on [Transfer complete] notes "in the
+            -- conversation", and without one the NPC talks itself into full-receipt fiction
+            -- (live catch: paid 250 of 1000, captain claimed "the full 1 000 credits" arrived).
+            card.turns = card.turns or {}
+            local note
+            if asked > 0 and paid < asked then
+                note = "[Transfer complete: " .. paid .. " Cr received of the " .. asked .. " Cr agreed.]"
+            else
+                note = "[Transfer complete: " .. paid .. " Cr received.]"
+            end
+            card.turns[#card.turns + 1] = { role = "user", text = note }
+            while #card.turns > CARD_MAX_TURNS do table.remove(card.turns, 1) end
+            -- #272: money that ARRIVES settles old wrongs - the bill can be paid
+            if type(card.debt) == "table" and paid > 0 and paid >= (tonumber(card.debt.amt) or 0) then
+                card.debt = nil
+                AI_Influence.AddCardFact(card, "the player came back and settled the outstanding debt in full", "npc_claim", 15, "relationship")
+                AI_Influence.FlagAggrieved(pt.token, 0)
+                log("debt CLEARED by payment")
+            end
+            if type(card.grudge) == "table" and paid > 0 and paid >= math.max(1, (tonumber(card.grudge.asked) or 0) - (tonumber(card.grudge.paid) or 0)) then
+                card.grudge = nil
+                AI_Influence.AddCardFact(card, "the player made the earlier shortfall right with a further payment", "npc_claim", 15, "relationship")
+                AI_Influence.FlagAggrieved(pt.token, 0)
+                log("grudge CLEARED by payment")
+            end
+            if asked > 0 and paid >= math.floor(asked * 1.2) then
+                card.trust = math.min(10, (tonumber(card.trust) or 0) + 1)
+                AI_Influence.AddCardFact(card, "the player paid GENEROUSLY: " .. paid .. " credits when only " .. asked .. " was asked", "npc_claim", 16, "relationship")
+                log("payment reaction: GENEROUS (+1 trust)")
+                if type(card.grudge) == "table" then
+                    card.grudge = nil
+                    AI_Influence.FlagAggrieved(pt.token, 0)
+                    log("grudge CLEARED by generosity")
+                end
+            elseif paid >= asked then
+                AI_Influence.AddCardFact(card, "received a confirmed payment of " .. paid .. " credits from the player for " .. pt.why, "npc_claim", 15, "promise")
+            elseif paid >= math.floor(asked * 0.7) then
+                card.trust = math.max(-10, (tonumber(card.trust) or 0) - 1)
+                AI_Influence.AddCardFact(card, "the player SHORTCHANGED me: paid " .. paid .. " of the " .. asked .. " credits agreed", "npc_claim", 16, "relationship")
+                log("payment reaction: SHORTCHANGED (-1 trust)")
+                card.grudge = { k = "shortpay", paid = paid, asked = asked, why = pt.why, day = gameDay() }
+                AI_Influence.FlagAggrieved(pt.token, 1, pt.target)
+            else
+                card.trust = math.max(-10, (tonumber(card.trust) or 0) - 2)
+                card.resent = math.min(10, (tonumber(card.resent) or 0) + 2)
+                AI_Influence.AddCardFact(card, "the player INSULTED me with a lowball payment: " .. paid .. " of " .. asked .. " credits agreed", "npc_claim", 18, "relationship")
+                log("payment reaction: INSULTED (-2 trust, +2 resent)")
+                card.grudge = { k = "insult", paid = paid, asked = asked, why = pt.why, day = gameDay() }
+                AI_Influence.FlagAggrieved(pt.token, 1, pt.target)
+            end
         end)
         local tm2 = rawget(_G, "X4_Terminal_Menu")
         if tm2 and tm2.currentContext and tostring(tm2.currentContext.target) == tostring(pt.target) then
@@ -3866,10 +4208,15 @@ local function init()
     RegisterEvent("AIChat.transfer_failed", function()
         local pt = AI_Influence._pendingTransfer; AI_Influence._pendingTransfer = nil
         if not pt then return end
-        AI_Influence.LoadCard(pt.token, function(card)
-            card = (type(card) == "table") and card or newCard()
+        AI_Influence.WithCard(pt.token, function(card)
             AI_Influence.AddCardFact(card, "the player agreed to pay " .. pt.amt .. " credits but could not cover it", "npc_claim", 12, "relationship")
-            AI_Influence.StoreCard(pt.token, card)
+            -- #272: an agreed amount that never arrived is still OWED
+            local owed = tonumber(pt.asked) or tonumber(pt.amt) or 0
+            if owed > 0 then
+                card.debt = { amt = owed, why = pt.why, day = gameDay() }
+                AI_Influence.FlagAggrieved(pt.token, 1, pt.target)
+                log("debt stamped (failed payment) amt=" .. tostring(owed))
+            end
         end)
         local tm2 = rawget(_G, "X4_Terminal_Menu")
         if tm2 and tm2.currentContext and tostring(tm2.currentContext.target) == tostring(pt.target) then
@@ -3898,18 +4245,36 @@ local function init()
         -- Category "relationship" promotes it to imp => it also enters SEMANTIC RECALL (RoleRAG).
         local ss = AI_Influence._session
         AI_Influence._session = nil
-        if ss and ss.turns >= 2 then
-            local line = "[episode] Day " .. tostring(gameDay())
+        -- #272: walking out on a proposed-but-unpaid deal leaves a DEBT on the card - closing the
+        -- window is not an escape hatch. The pending slot never outlives the conversation either
+        -- (stale-slot bug: a later unrelated settlement would be attributed to this dead proposal).
+        local pt = AI_Influence._pendingTransfer
+        AI_Influence._pendingTransfer = nil
+        local ghost = (pt and ss and pt.token == ss.token and (tonumber(pt.asked) or 0) > 0) and pt or nil
+        local wantEpisode = ss and ss.turns >= 2
+        if not wantEpisode and not ghost then return end
+        local line = nil
+        if wantEpisode then
+            line = "[episode] Day " .. tostring(gameDay())
                 .. (ss.sector ~= "" and (" at " .. ss.sector) or "") .. ": " .. tostring(ss.turns) .. " exchanges"
             if (ss.paid or 0) > 0 then line = line .. "; the player paid " .. tostring(ss.paid) .. " credits" end
             if #ss.checks > 0 then line = line .. "; attempts: " .. table.concat(ss.checks, ", ") end
-            AI_Influence.LoadCard(ss.token, function(card)
-                card = (type(card) == "table") and card or newCard()
-                AI_Influence.AddCardFact(card, line, "npc_claim", 7, "relationship")
-                AI_Influence.StoreCard(ss.token, card)
-                log("EPISODE written: " .. line)
-            end)
         end
+        AI_Influence.WithCard(ss.token, function(card)
+            if line then
+                AI_Influence.AddCardFact(card, line, "npc_claim", 7, "relationship")
+                log("EPISODE written: " .. line)
+            end
+            if ghost then
+                card.debt = { amt = tonumber(ghost.asked) or 0, why = ghost.why, day = gameDay() }
+                card.turns = card.turns or {}
+                card.turns[#card.turns + 1] = { role = "user", text = "[The player left without paying the agreed " .. tostring(ghost.asked) .. " Cr for " .. tostring(ghost.why) .. ".]" }
+                while #card.turns > CARD_MAX_TURNS do table.remove(card.turns, 1) end
+                AI_Influence.AddCardFact(card, "the player agreed to pay " .. tostring(ghost.asked) .. " credits for " .. tostring(ghost.why) .. " and walked away without paying", "npc_claim", 17, "relationship")
+                AI_Influence.FlagAggrieved(ss.token, 1, ghost.target)
+                log("debt stamped (ghosted deal) amt=" .. tostring(ghost.asked))
+            end
+        end)
     end)
     RegisterEvent("AIChat.poll", onPollTick)
     RegisterEvent("AIChat.index_npcs", onIndexNpcs)

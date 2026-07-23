@@ -69,6 +69,8 @@
             </do_for_each>
           </do_if>
           <do_if value="$pship? and $pship != null">
+            <!-- #282b: single orders supersede too - same retask semantics as order sets -->
+            <cancel_all_orders object="$pship"/>
             <!-- #218 verb branches, each on a PROVEN actuator/param shape -->
             <do_if value="$ord == 'patrol' or $ord == 'hold'">
               <create_position name="$panchor" space="$pship.sector"/>
@@ -116,7 +118,9 @@
             <do_elseif value="$ord == 'explore'">
               <!-- #263: vanilla Explore default-behaviour order. NEEDS-IN-GAME-VERIFY: the order id
                    is vanilla-standard but not corpus-proven; a bad id logs cleanly, no crash. -->
-              <create_order object="$pship" id="'Explore'"/>
+              <create_order object="$pship" id="'Explore'">
+                <param name="timeout" value="30min"/>
+              </create_order>
               <show_notification text="'Order acknowledged: ' + $pship.knownname + ' charting an exploration course'"/>
               <debug_text text="'AIC player_order EXPLORE -> ' + $pship.idcode" filter="general"/>
             </do_elseif>
@@ -231,6 +235,11 @@
             <set_value name="$pship2" exact="md.ai_influence_conversation.State.$current_npc.ship"/>
           </do_if>
           <do_if value="$pship2 != null">
+            <!-- #282b: NEW orders SUPERSEDE the queue (vanilla retask pattern: cancel_all_orders
+                 then create_order). Ken's live catch: the fresh budgeted patrol queued BEHIND a
+                 stuck pre-#282 infinite Explore forever. A commander's new orders replace old. -->
+            <cancel_all_orders object="$pship2"/>
+            <debug_text text="'AIC ORDERSET superseding existing queue for ' + $pship2.knownname" filter="general"/>
             <find_station name="$AllSta" space="player.galaxy" multiple="true"/>
             <do_all exact="$n2" counter="$si">
               <set_value name="$sv" exact="event.param3.{'$v' + $si}"/>
@@ -245,15 +254,22 @@
                   </do_if>
                 </do_for_each>
               </do_if>
-              <do_if value="$sv == 'patrol' or $sv == 'hold'">
-                <create_position name="$oanchor" space="$tsec"/>
-                <create_order object="$pship2" id="'AICOpordProtect'">
-                  <param name="destination" value="[$tsec, $oanchor]"/>
-                  <param name="opordradius" value="if $sv == 'hold' then 5000 else 30000"/>
-                  <param name="aggressive" value="false"/>
-                  <param name="leasetag" value="'orderset_' + $sv"/>
+              <!-- #282: per-step END STATE - the player's stated duration (clamped 5-120 min) or a
+                   per-verb default. Native order timeouts make each step FINISH so the queue
+                   advances; the previous AICOpordProtect patrol/hold were infinite by design. -->
+              <set_value name="$uv" exact="if event.param3.{'$u' + $si}? then event.param3.{'$u' + $si} else 0"/>
+              <set_value name="$dur2" exact="if $uv gt 0 then ([[$uv, 5].max, 120].min * 60s) else 0s"/>
+              <do_if value="$sv == 'patrol'">
+                <create_order object="$pship2" id="'Patrol'">
+                  <param name="space" value="$tsec"/>
+                  <param name="timeout" value="if $dur2 gt 0s then $dur2 else 20min"/>
                 </create_order>
               </do_if>
+              <do_elseif value="$sv == 'hold'">
+                <create_order object="$pship2" id="'Wait'">
+                  <param name="timeout" value="if $dur2 gt 0s then $dur2 else 15min"/>
+                </create_order>
+              </do_elseif>
               <do_elseif value="$sv == 'attack'">
                 <find_ship name="$Foes2" space="$tsec" owner="faction.xenon" checkoperational="true" multiple="true"/>
                 <do_if value="$Foes2? and $Foes2.count gt 0">
@@ -283,13 +299,24 @@
                   </do_if>
                 </do_if>
                 <do_if value="$sv == 'trade'">
-                  <create_order object="$pship2" id="'AutoTrade'"/>
+                  <!-- #282 fix: 'AutoTrade' is a PHANTOM id (no such vanilla order - logged cleanly,
+                       did nothing). TradeRoutine is the real engine order; warebasket is required. -->
+                  <create_order object="$pship2" id="'TradeRoutine'">
+                    <param name="warebasket" value="$pship2.warebasket.list"/>
+                    <param name="duration" value="if $dur2 gt 0s then $dur2 else 1h"/>
+                  </create_order>
                 </do_if>
                 <do_elseif value="$sv == 'mine'">
-                  <create_order object="$pship2" id="'AutoMine'"/>
+                  <!-- #282 fix: 'AutoMine' phantom -> MiningRoutine (warebasket defaults to the
+                       ship's own minable basket per the vanilla order definition) -->
+                  <create_order object="$pship2" id="'MiningRoutine'">
+                    <param name="duration" value="if $dur2 gt 0s then $dur2 else 1h"/>
+                  </create_order>
                 </do_elseif>
                 <do_elseif value="$sv == 'explore'">
-                  <create_order object="$pship2" id="'Explore'"/>
+                  <create_order object="$pship2" id="'Explore'">
+                    <param name="timeout" value="if $dur2 gt 0s then $dur2 else 30min"/>
+                  </create_order>
                 </do_elseif>
                 <do_elseif value="$sv == 'collect'">
                   <create_order object="$pship2" id="'CollectDropsRegular'"/>
@@ -311,7 +338,52 @@
                   </create_order>
                 </do_if>
               </do_elseif>
-              <debug_text text="'AIC ORDERSET step ' + $si + '/' + $n2 + ': ' + $sv + ' in ' + $tsec.knownname + (if $remote then ' (remote)' else '')" filter="general"/>
+              <do_elseif value="$sv == 'deploy_sat' or $sv == 'deploy_beacon' or $sv == 'deploy_probe'">
+                <!-- #284: conversational deployables - launched ONLY from the ship's REAL racks.
+                     DeployObjectAtPosition itself caps to ammostorage; we read the category list
+                     so no macro is hardcoded. For these verbs "until" = unit count (default 1). -->
+                <set_value name="$dcat" exact="deployablecategory.satellite"/>
+                <do_if value="$sv == 'deploy_beacon'">
+                  <set_value name="$dcat" exact="deployablecategory.navbeacon"/>
+                </do_if>
+                <do_if value="$sv == 'deploy_probe'">
+                  <set_value name="$dcat" exact="deployablecategory.resourceprobe"/>
+                </do_if>
+                <set_value name="$DMacs" exact="$pship2.ammostorage.{$dcat}.list"/>
+                <do_if value="$DMacs? and $DMacs.count gt 0">
+                  <set_value name="$dmac" exact="$DMacs.{1}"/>
+                  <set_value name="$dstock" exact="$pship2.ammostorage.{$dmac}.count"/>
+                  <set_value name="$damt" exact="1"/>
+                  <do_if value="$uv gt 0">
+                    <set_value name="$damt" exact="[[$uv, 1].max, $dstock].min"/>
+                  </do_if>
+                  <create_position name="$dpos2" space="$tsec"/>
+                  <create_order object="$pship2" id="'DeployObjectAtPosition'">
+                    <param name="destination" value="[$tsec, $dpos2]"/>
+                    <param name="objectstodeploy" value="[$dmac]"/>
+                    <param name="amountstodeploy" value="[$damt]"/>
+                  </create_order>
+                  <debug_text text="'AIC ORDERSET deployable ' + $sv + ' macro=' + $dmac + ' amount=' + $damt + ' stock=' + $dstock" filter="general"/>
+                </do_if>
+                <do_if value="not $DMacs? or $DMacs.count lt 1">
+                  <debug_text text="'AIC ORDERSET ' + $sv + ' REFUSED - empty racks on ' + $pship2.knownname" filter="general"/>
+                </do_if>
+              </do_elseif>
+              <do_elseif value="$sv == 'rescue'">
+                <!-- #284: RescueInRange - sweeps own-faction spacesuits, completes naturally -->
+                <create_position name="$rpos2" space="$tsec"/>
+                <create_order object="$pship2" id="'RescueInRange'">
+                  <param name="destination" value="[$tsec, $rpos2]"/>
+                </create_order>
+              </do_elseif>
+              <do_elseif value="$sv == 'trade_update'">
+                <!-- #284: ExploreUpdate - revisit known stations for fresh trade data; timeout
+                     default 0s = ONE natural cycle (recon-verified end state, no budget needed) -->
+                <create_order object="$pship2" id="'ExploreUpdate'">
+                  <param name="targetspace" value="$tsec"/>
+                </create_order>
+              </do_elseif>
+              <debug_text text="'AIC ORDERSET step ' + $si + '/' + $n2 + ': ' + $sv + ' in ' + $tsec.knownname + (if $remote then ' (remote)' else '') + (if $uv gt 0 then (' until=' + $uv + 'min') else ' (default budget)')" filter="general"/>
             </do_all>
             <show_notification text="'Order set acknowledged: ' + $pship2.knownname + ' - ' + $n2 + ' sequenced steps'"/>
           </do_if>

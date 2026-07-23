@@ -63,6 +63,11 @@
           <set_value name="Toggles.$dnd" exact="1"/>
           <set_value name="Toggles.$obits" exact="1"/>
         </do_if>
+        <!-- #274: plague flag initialised separately so EXISTING saves (which already pass the
+             dnd guard) still get it minted on load -->
+        <do_if value="not Toggles.$plague?">
+          <set_value name="Toggles.$plague" exact="1"/>
+        </do_if>
       </actions>
     </cue>
     <cue name="Toggles_push" instantiate="true" namespace="this">
@@ -73,7 +78,7 @@
         </check_any>
       </conditions>
       <actions>
-        <raise_lua_event name="'AIChat.toggles_config'" param="'dnd=' + md.ai_influence_backend.Toggles.$dnd + '|obits=' + md.ai_influence_backend.Toggles.$obits"/>
+        <raise_lua_event name="'AIChat.toggles_config'" param="'dnd=' + md.ai_influence_backend.Toggles.$dnd + '|obits=' + md.ai_influence_backend.Toggles.$obits + '|plague=' + (if Toggles.$plague? then Toggles.$plague else 1)"/>
         <debug_text text="'AIC toggles pushed dnd=' + md.ai_influence_backend.Toggles.$dnd + ' obits=' + md.ai_influence_backend.Toggles.$obits" filter="general"/>
       </actions>
     </cue>
@@ -88,6 +93,9 @@
           </do_if>
           <do_if value="event.param3.$obits?">
             <set_value name="md.ai_influence_backend.Toggles.$obits" exact="event.param3.$obits"/>
+          </do_if>
+          <do_if value="event.param3.$plague?">
+            <set_value name="md.ai_influence_backend.Toggles.$plague" exact="event.param3.$plague"/>
           </do_if>
           <debug_text text="'AIC toggles persisted dnd=' + md.ai_influence_backend.Toggles.$dnd + ' obits=' + md.ai_influence_backend.Toggles.$obits" filter="general"/>
         </do_if>

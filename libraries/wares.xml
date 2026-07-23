@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<diff>
+  <!-- #280 roleplay items: price-1 personal-inventory wares NPCs can GIVE through conversation.
+       'missiononly' keeps them out of trader stock; 'nocustomgamestart' out of start budgets.
+       Per-instance flavor (title/author/contents) lives in the mod's card + logbook layer -
+       ware text is engine-static by design (recon-verified). -->
+  <add sel="/wares">
+    <ware id="aic_sealed_letter" name="{33280274,101}" description="{33280274,102}" transport="inventory" volume="1" tags="inventory missiononly nocustomgamestart">
+      <price min="1" average="1" max="1" />
+      <container ref="sm_gen_wares_common_01_macro" />
+    </ware>
+    <ware id="aic_data_chip" name="{33280274,201}" description="{33280274,202}" transport="inventory" volume="1" tags="inventory missiononly nocustomgamestart">
+      <price min="1" average="1" max="1" />
+      <container ref="sm_gen_wares_common_01_macro" />
+    </ware>
+    <ware id="aic_dossier" name="{33280274,301}" description="{33280274,302}" transport="inventory" volume="1" tags="inventory missiononly nocustomgamestart">
+      <price min="1" average="1" max="1" />
+      <container ref="sm_gen_wares_common_01_macro" />
+    </ware>
+    <ware id="aic_trade_contract" name="{33280274,401}" description="{33280274,402}" transport="inventory" volume="1" tags="inventory missiononly nocustomgamestart">
+      <price min="1" average="1" max="1" />
+      <container ref="sm_gen_wares_common_01_macro" />
+    </ware>
+    <ware id="aic_keepsake" name="{33280274,501}" description="{33280274,502}" transport="inventory" volume="1" tags="inventory missiononly nocustomgamestart">
+      <price min="1" average="1" max="1" />
+      <container ref="sm_gen_wares_common_01_macro" />
+    </ware>
+  </add>
+</diff>

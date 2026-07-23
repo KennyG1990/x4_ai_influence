@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<language id="44">
+  <page id="33280274" title="AI Influence Items" descr="Roleplay item names and descriptions (#280)">
+    <t id="101">Sealed Letter</t>
+    <t id="102">A hand-sealed letter passed to you in person. Its contents are known to you and the author; the seal marks it genuine.</t>
+    <t id="201">Encrypted Data Chip</t>
+    <t id="202">A pocket data chip, encrypted to your personal key. Whatever is on it was given, not taken.</t>
+    <t id="301">Intelligence Dossier</t>
+    <t id="302">A compiled dossier of names, routes and observations. Someone did this legwork for you.</t>
+    <t id="401">Signed Trade Contract</t>
+    <t id="402">A witnessed agreement bearing signatures and a faction stamp. Paper still means something out here.</t>
+    <t id="501">Personal Keepsake</t>
+    <t id="502">A small object of no market value and considerable meaning. It was given freely.</t>
+  </page>
+</language>

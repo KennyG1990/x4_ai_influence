@@ -114,6 +114,12 @@ function menu.currentChoices()
     -- C2: with a pending influence action, the wheel ITSELF becomes the confirm gate — dedicated
     -- Confirm/Decline wedges (onInput's yes/no gate is unchanged; these just feed it).
     if menu._pendingAction then
+        -- #270: payments are a REAL choice - pay what they asked, type your own number, or refuse
+        if menu._pendingAction.control == "aic_transfer" then
+            return { { label = "Pay in full - " .. tostring(menu._pendingAction.credits) .. " Cr", line = "__pay_full" },
+                     { label = "Enter a different amount", line = "__pay_custom" },
+                     { label = "Refuse to pay", line = "__pay_refuse" } }
+        end
         return { { label = "Confirm — do it", line = "yes" },
                  { label = "Decline the proposal", line = "no" } }
     end
@@ -362,6 +368,55 @@ function menu.onInput(text)
     text = string.gsub(text, "%s+$", "")
     if text == "" then return end
 
+    -- #270: typed-amount mode - the dock input IS the credit amount
+    if menu._amountMode and menu._pendingAction and menu._pendingAction.control == "aic_transfer" then
+        local amt = tonumber((tostring(text):gsub("[^%d]", "")))
+        menu._amountMode = false
+        local pending = menu._pendingAction
+        menu._pendingAction = nil
+        menu.history = menu.history or {}
+        if amt and amt > 0 then
+            if AddUITriggeredEvent then
+                pcall(function() AddUITriggeredEvent("ai_influence", "aic_transfer", {
+                    credits = math.floor(amt), asked = pending.credits, why = pending.why, deliverable = pending.deliverable }) end)
+            end
+            table.insert(menu.history, { role = "assistant", text = "[You transfer " .. math.floor(amt) .. " Cr (they asked " .. tostring(pending.credits) .. ").]", err = true })
+        else
+            table.insert(menu.history, { role = "assistant", text = "[No valid amount entered - payment cancelled.]", err = true })
+        end
+        menu.editboxText = ""
+        if menu.active and menu.display then menu.display() end
+        return
+    end
+    if menu._pendingAction and menu._pendingAction.control == "aic_transfer" then
+        if text == "__pay_full" then
+            local pending = menu._pendingAction
+            menu._pendingAction = nil
+            if AddUITriggeredEvent then
+                pcall(function() AddUITriggeredEvent("ai_influence", "aic_transfer", {
+                    credits = pending.credits, asked = pending.credits, why = pending.why, deliverable = pending.deliverable }) end)
+            end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[You pay the full " .. tostring(pending.credits) .. " Cr.]", err = true })
+            if menu.active and menu.display then menu.display() end
+            return
+        elseif text == "__pay_custom" then
+            menu._amountMode = true
+            menu.typing = true
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[Enter the amount to transfer - they asked for " .. tostring(menu._pendingAction.credits) .. " Cr. Pay less at your own risk.]", err = true })
+            if menu.active and menu.display then menu.display() end
+            return
+        elseif text == "__pay_refuse" then
+            menu._pendingAction = nil
+            -- #272: an open refusal kills the pending deal - the NPC hears it and reacts LIVE;
+            -- no stale uix slot, no ghost-debt stamp (refusing to your face is not ghosting).
+            local ai0 = rawget(_G, "AI_Influence")
+            if ai0 then ai0._pendingTransfer = nil end
+            text = "I am not paying that."
+            -- falls through: the refusal becomes a real chat line the NPC reacts to
+        end
+    end
     -- #253: SIM commands - instant test triggers for the time-gated systems (Ken: "speed this up").
     -- sim event [military|political|economic|social|anomalous] | sim outbreak | sim tick | sim drop
     do
@@ -369,7 +424,7 @@ function menu.onInput(text)
         if low:sub(1, 4) == "sim " or low:sub(1, 5) == "/sim " or low == "sim" then
             local arg = low:gsub("^/?sim%s*", "")
             local br = rawget(_G, "AI_Influence")
-            local note = "[sim commands: 'sim event <type>' generate a galaxy event now | 'sim outbreak' start a contagion here | 'sim drop' force an informant/initiative pass | 'sim tick' advance the generator cadence]"
+            local note = "[sim commands: 'sim event <type>' | 'sim outbreak' seed a plague | 'sim spread' force a plague jump | 'sim strike' force a plague tick | 'sim drop' informant/initiative pass | 'sim tick' generator cadence | 'plague on/off']"
             if br and arg ~= "" then
                 if arg:sub(1, 5) == "event" then
                     local ty = arg:match("^event%s+(%a+)") or "political"
@@ -377,6 +432,17 @@ function menu.onInput(text)
                         pcall(br.DynEventGenerate, ty)
                         note = "[sim: generating a '" .. ty .. "' galaxy event - watch inbox/logbook/debuglog]"
                     end
+                elseif arg == "dispatch" then
+                    if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "wardesk_force", {}) end) end
+                    note = "[sim: forcing a war-desk dispatch from accumulated losses - watch logbook/debuglog for 'WARDESK']"
+                elseif arg == "spread" then
+                    if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "plague_spread_force", {}) end) end
+                    note = "[sim: forcing a plague spread roll - watch debuglog for 'AIC PLAGUE spread']"
+                elseif arg == "strike" then
+                    -- day=0 on purpose: MD keeps its stored day, so this runs strikes WITHOUT
+                    -- advancing the phase clocks - pure workforce-effect testing
+                    if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "plague_tick2", { day = 0 }) end) end
+                    note = "[sim: forcing a plague tick (strikes at current phases) - watch debuglog for 'AIC PLAGUE strike']"
                 elseif arg == "outbreak" then
                     if br.ContagionStart then
                         pcall(br.ContagionStart)
@@ -397,6 +463,24 @@ function menu.onInput(text)
             end
             menu.history = menu.history or {}
             table.insert(menu.history, { role = "assistant", text = note, err = true })
+            menu.editboxText = ""
+            if menu.active and menu.display then menu.display() end
+            return
+        end
+    end
+    -- #274: plague toggle typed straight into the chat box ("plague off" / "plague on")
+    do
+        local low = string.lower(text)
+        if low == "plague off" or low == "/plague off" or low == "plague on" or low == "/plague on" then
+            local br = rawget(_G, "AI_Influence")
+            local on = (string.sub(low, -3) == " on")
+            if br then br.PLAGUE_ENABLED = on end
+            if AddUITriggeredEvent then
+                pcall(function() AddUITriggeredEvent("ai_influence", "toggles_persist", { plague = on and 1 or 0 }) end)
+                if not on then pcall(function() AddUITriggeredEvent("ai_influence", "plague_off", {}) end) end
+            end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[Station plague system " .. (on and "ENABLED" or "DISABLED - active outbreaks purged") .. ".]", err = true })
             menu.editboxText = ""
             if menu.active and menu.display then menu.display() end
             return
@@ -450,6 +534,11 @@ function menu.onInput(text)
         else
             menu.history = menu.history or {}
             table.insert(menu.history, { role = "assistant", text = "[Declined the proposal.]" })
+            -- #272: a declined transfer clears the uix pending slot as well (stale-slot bug)
+            if pending.control == "aic_transfer" then
+                local ai1 = rawget(_G, "AI_Influence")
+                if ai1 then ai1._pendingTransfer = nil end
+            end
             -- fall through: send this message as a normal chat turn
         end
     end
@@ -527,6 +616,7 @@ function menu.onCloseElement()
 end
 
 function menu.cleanup()
+    menu._amountMode = nil
     menu.lastOdds = nil
     menu.lastCheck = nil
     menu.frame = nil
