@@ -156,6 +156,10 @@
                 <write_to_logbook category="news" title="'A Power Falls'" text="$oname + ' has lost its last territory. Its remaining stations and fleets fight on without a homeland.'"/>
                 <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $oid + '|to=' + $oname + ' has lost its LAST territory - a power has fallen'"/>
                 <debug_text text="'AIC TERRITORY ELIMINATION ' + $oid + ' holds zero sectors (conquest-vassalize hook, #285)'" filter="general"/>
+                <!-- #285: the conqueror may convert the fallen power into a tributary -->
+                <do_if value="$nid != ''">
+                  <signal_cue_instantly cue="md.aic_politics.On_pol_conquest" param="table[$cq = $nid, $lo = $oid]"/>
+                </do_if>
               </do_if>
             </do_if>
           </do_if>

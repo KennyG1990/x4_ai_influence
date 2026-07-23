@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mdscript name="aic_politics" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <!-- Description: LLM-driven NPCs and factions. Serverless: X4 Lua talks directly to the local Player2 runtime (:4315); validated actions feed back into the live X4 world. -->
+  <!-- #285 GALACTIC POLITICS: vassalage core. Recipes grounded on the Dynamic Universe fork
+       (GPL v3, github IllustrisJack/dynamic-universe - patterns learned, code our own):
+       unlock -> set_faction_relation both ways -> relock is THEIR proven lock discipline;
+       tribute via reward_player; fork-tuned happiness numbers. Registry lives here in MD
+       blackboard (save-persisted); Lua narrates via the existing ledger/war-desk lanes. -->
+  <cues>
+    <cue name="Politics" namespace="this">
+      <conditions>
+        <check_any>
+          <event_game_started/>
+          <event_game_loaded/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not Politics.$Vassals?">
+          <set_value name="Politics.$Vassals" exact="table[]"/>
+        </do_if>
+        <do_if value="not Politics.$Enabled?">
+          <set_value name="Politics.$Enabled" exact="1"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- VASSALIZE: the single formation gate every lane calls (conquest, sim, and slice-2's
+         LLM diplomacy verdict + conversational broker). param table: $v, $s (faction id
+         strings), $src ('conquest'|'sim'|'diplomacy'|'broker'), optional $hap0. -->
+    <cue name="On_pol_vassalize" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_ui_triggered screen="'ai_influence'" control="'pol_vassalize'"/>
+          <event_cue_signalled/>
+        </check_any>
+      </conditions>
+      <actions>
+        <do_if value="not Politics.$Vassals?">
+          <set_value name="Politics.$Vassals" exact="table[]"/>
+        </do_if>
+        <do_if value="not Politics.$Enabled?">
+          <set_value name="Politics.$Enabled" exact="1"/>
+        </do_if>
+        <set_value name="$P" exact="event.param3"/>
+        <do_if value="not $P? or not $P.$v?">
+          <set_value name="$P" exact="event.param"/>
+        </do_if>
+        <do_if value="Politics.$Enabled? and Politics.$Enabled == 1 and $P?">
+          <set_value name="$v" exact="if $P.$v? then $P.$v else ''"/>
+          <set_value name="$s" exact="if $P.$s? then $P.$s else ''"/>
+          <set_value name="$src" exact="if $P.$src? then $P.$src else 'sim'"/>
+          <do_if value="$v != '' and $s != '' and $v != $s and faction.{$v}? and ($s == 'player' or faction.{$s}?) and not Politics.$Vassals.{'$' + $v}?">
+            <set_value name="$hap0" exact="if $P.$hap0? then $P.$hap0 else (if $src == 'conquest' then 35 else 60)"/>
+            <set_value name="$sfac" exact="if $s == 'player' then faction.player else faction.{$s}"/>
+            <set_value name="Politics.$Vassals.{'$' + $v}" exact="table[$vid = $v, $s = $s, $hap = $hap0, $trib = 5, $d0 = player.age, $grace = player.age + 30min, $src = $src]"/>
+            <!-- the fork's proven lock discipline: unlock, set both ways, relock the vassal -->
+            <set_faction_relation_locked faction="faction.{$v}" locked="false"/>
+            <set_faction_relation faction="faction.{$v}" otherfaction="$sfac" value="1.0"/>
+            <set_faction_relation faction="$sfac" otherfaction="faction.{$v}" value="1.0"/>
+            <set_faction_relation_locked faction="faction.{$v}" locked="true"/>
+            <set_value name="$vn" exact="faction.{$v}.knownname"/>
+            <set_value name="$sn2" exact="if $s == 'player' then 'your dominion' else faction.{$s}.knownname"/>
+            <write_to_logbook category="news" title="'A New Tributary'" text="$vn + ' has entered vassalage under ' + $sn2 + '. Garrisons, tribute and uneasy loyalty follow.'"/>
+            <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|to=' + $vn + ' becomes a tributary of ' + $sn2"/>
+            <debug_text text="'AIC POLITICS vassalized ' + $v + ' under ' + $s + ' (src=' + $src + ' hap=' + $hap0 + ')'" filter="general"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- RELEASE: rebellion or administrative release. param table: $v, $mode ('rebellion'|'peaceful') -->
+    <cue name="On_pol_release" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_ui_triggered screen="'ai_influence'" control="'pol_release'"/>
+          <event_cue_signalled/>
+        </check_any>
+      </conditions>
+      <actions>
+        <set_value name="$RP" exact="event.param3"/>
+        <do_if value="not $RP? or not $RP.$v?">
+          <set_value name="$RP" exact="event.param"/>
+        </do_if>
+        <do_if value="$RP? and $RP.$v?">
+          <set_value name="$v" exact="$RP.$v"/>
+          <set_value name="$mode" exact="if $RP.$mode? then $RP.$mode else 'peaceful'"/>
+          <do_if value="Politics.$Vassals.{'$' + $v}? and faction.{$v}?">
+            <set_value name="$s" exact="Politics.$Vassals.{'$' + $v}.$s"/>
+            <set_value name="$sfac" exact="if $s == 'player' then faction.player else faction.{$s}"/>
+            <set_faction_relation_locked faction="faction.{$v}" locked="false"/>
+            <do_if value="$mode == 'rebellion'">
+              <set_faction_relation faction="faction.{$v}" otherfaction="$sfac" value="-0.5"/>
+              <set_faction_relation faction="$sfac" otherfaction="faction.{$v}" value="-0.5"/>
+              <write_to_logbook category="news" title="'Rebellion!'" text="faction.{$v}.knownname + ' has risen against its suzerain and broken the vassalage by force.'"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $v + '|b=' + $s + '|to=' + faction.{$v}.knownname + ' REBELS against its suzerain - the vassalage is broken by force'"/>
+            </do_if>
+            <do_else>
+              <write_to_logbook category="news" title="'Vassalage Dissolved'" text="faction.{$v}.knownname + ' and its suzerain have dissolved their arrangement peacefully.'"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|to=' + faction.{$v}.knownname + ' is released from vassalage peacefully'"/>
+            </do_else>
+            <remove_value name="Politics.$Vassals.{'$' + $v}"/>
+            <debug_text text="'AIC POLITICS released ' + $v + ' (' + $mode + ')'" filter="general"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- CONQUEST lane: signalled by galaxynews when a faction loses its last territory.
+         param = conqueror-id + '|' + loser-id. Elimination = worse than 1 sector, so the
+         fork's scaling lands at 70 (base 35 x2); HQ nuance arrives with #286. -->
+    <cue name="On_pol_conquest" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <do_if value="not Politics.$Vassals?">
+          <set_value name="Politics.$Vassals" exact="table[]"/>
+        </do_if>
+        <do_if value="not Politics.$Enabled?">
+          <set_value name="Politics.$Enabled" exact="1"/>
+        </do_if>
+        <do_if value="Politics.$Enabled? and Politics.$Enabled == 1 and event.param? and event.param.$cq? and event.param.$lo?">
+          <set_value name="$cq" exact="event.param.$cq"/>
+          <set_value name="$lo" exact="event.param.$lo"/>
+          <do_if value="$cq != '' and $lo != '' and faction.{$lo}? and faction.{$cq}?">
+            <!-- elimination = worse than a 1-sector defeat, so the fork's scaling gives 70% -->
+            <set_value name="$roll" min="1" max="100"/>
+            <do_if value="$roll le 70">
+              <signal_cue_instantly cue="On_pol_vassalize" param="table[$v = $lo, $s = $cq, $src = 'conquest']"/>
+              <debug_text text="'AIC POLITICS conquest capitulation: ' + $lo + ' submits to ' + $cq + ' (roll=' + $roll + '/70)'" filter="general"/>
+            </do_if>
+            <do_if value="$roll gt 70">
+              <debug_text text="'AIC POLITICS conquest roll failed: ' + $lo + ' fights on stateless (roll=' + $roll + '/70)'" filter="general"/>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- HAPPINESS TICK: 5min cadence (fork number). Drains, tribute payouts, rebellion rolls.
+         Releases collected during iteration, processed after (no mutation mid-loop). -->
+    <cue name="Pol_tick" namespace="this">
+      <delay exact="5min"/>
+      <actions>
+        <do_if value="not Politics.$Vassals?">
+          <set_value name="Politics.$Vassals" exact="table[]"/>
+        </do_if>
+        <do_if value="not Politics.$Enabled?">
+          <set_value name="Politics.$Enabled" exact="1"/>
+        </do_if>
+        <do_if value="Politics.$Enabled? and Politics.$Enabled == 1 and Politics.$Vassals? and Politics.$Vassals.keys.count gt 0">
+          <set_value name="$Rebels" exact="[]"/>
+          <do_all exact="Politics.$Vassals.keys.count" counter="$i">
+            <set_value name="$vk" exact="Politics.$Vassals.keys.{$i}"/>
+            <set_value name="$E" exact="Politics.$Vassals.{$vk}"/>
+            <set_value name="$vid" exact="$E.$vid"/>
+            <do_if value="faction.{$vid}?">
+              <!-- tribute drain: (pct - 3) * 0.75 per tick (fork-tuned) -->
+              <set_value name="$drain" exact="(($E.$trib - 3) * 75) / 100"/>
+              <do_if value="$drain lt 0">
+                <set_value name="$drain" exact="0"/>
+              </do_if>
+              <set_value name="$E.$hap" exact="[[$E.$hap - $drain, 0].max, 100].min"/>
+              <!-- player-suzerain tribute: REAL credits, capped 5M/tick (fork cap) -->
+              <do_if value="$E.$s == 'player'">
+                <set_value name="$tribCr" exact="[($E.$trib * 1000000), 5000000].min"/>
+                <reward_player money="$tribCr * 1Cr"/>
+                <debug_text text="'AIC POLITICS tribute ' + $tribCr + ' Cr from ' + $vid + ' to the player'" filter="general"/>
+              </do_if>
+              <!-- rebellion roll below 30, outside the grace window -->
+              <do_if value="$E.$hap lt 30 and player.age gt $E.$grace">
+                <set_value name="$rroll" min="1" max="100"/>
+                <set_value name="$rchance" exact="(30 - $E.$hap)i * 3"/>
+                <do_if value="$rroll le $rchance">
+                  <append_to_list name="$Rebels" exact="$vid"/>
+                </do_if>
+                <do_if value="$rroll gt $rchance">
+                  <debug_text text="'AIC POLITICS unrest in ' + $vid + ' (hap=' + $E.$hap + ' roll=' + $rroll + '/' + $rchance + ')'" filter="general"/>
+                </do_if>
+              </do_if>
+            </do_if>
+          </do_all>
+          <do_all exact="$Rebels.count" counter="$r">
+            <signal_cue_instantly cue="On_pol_release" param="table[$v = $Rebels.{$r}, $mode = 'rebellion']"/>
+          </do_all>
+        </do_if>
+        <reset_cue cue="Pol_tick"/>
+      </actions>
+    </cue>
+    <!-- sim/adjust lane: pol_happy {v, n} sets happiness directly (testing + slice-2 events) -->
+    <cue name="On_pol_happy" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'pol_happy'"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param3? and event.param3.$v? and Politics.$Vassals.{'$' + event.param3.$v}?">
+          <set_value name="Politics.$Vassals.{'$' + event.param3.$v}.$hap" exact="[[event.param3.$n, 0].max, 100].min"/>
+          <debug_text text="'AIC POLITICS happiness ' + event.param3.$v + ' set to ' + Politics.$Vassals.{'$' + event.param3.$v}.$hap" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- politics off: unlock and purge every vassal (the fork's Safe Uninstall lesson) -->
+    <cue name="On_pol_off" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'pol_off'"/>
+      </conditions>
+      <actions>
+        <do_if value="Politics.$Vassals?">
+          <do_all exact="Politics.$Vassals.keys.count" counter="$i">
+            <set_value name="$vk2" exact="Politics.$Vassals.keys.{$i}"/>
+            <set_value name="$vid2" exact="Politics.$Vassals.{$vk2}.$vid"/>
+            <do_if value="faction.{$vid2}?">
+              <set_faction_relation_locked faction="faction.{$vid2}" locked="false"/>
+            </do_if>
+          </do_all>
+          <set_value name="Politics.$Vassals" exact="table[]"/>
+        </do_if>
+        <set_value name="Politics.$Enabled" exact="0"/>
+        <debug_text text="'AIC POLITICS disabled - all vassals unlocked and purged'" filter="general"/>
+      </actions>
+    </cue>
+    <cue name="On_pol_on" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'pol_on'"/>
+      </conditions>
+      <actions>
+        <set_value name="Politics.$Enabled" exact="1"/>
+        <debug_text text="'AIC POLITICS enabled'" filter="general"/>
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

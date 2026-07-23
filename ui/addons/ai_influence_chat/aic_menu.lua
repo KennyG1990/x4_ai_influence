@@ -432,6 +432,22 @@ function menu.onInput(text)
                         pcall(br.DynEventGenerate, ty)
                         note = "[sim: generating a '" .. ty .. "' galaxy event - watch inbox/logbook/debuglog]"
                     end
+                elseif arg:sub(1, 9) == "vassalize" then
+                    local va, sa = arg:match("^vassalize%s+(%a+)%s+(%a+)$")
+                    if va and sa and AddUITriggeredEvent then
+                        pcall(function() AddUITriggeredEvent("ai_influence", "pol_vassalize", { v = va, s = sa, src = "sim" }) end)
+                        note = "[sim: vassalizing " .. va .. " under " .. sa .. " - watch debuglog for 'AIC POLITICS']"
+                    else
+                        note = "[sim vassalize <vassal-id> <suzerain-id|player>]"
+                    end
+                elseif arg:sub(1, 8) == "polhappy" then
+                    local pv, pn = arg:match("^polhappy%s+(%a+)%s+(%d+)$")
+                    if pv and pn and AddUITriggeredEvent then
+                        pcall(function() AddUITriggeredEvent("ai_influence", "pol_happy", { v = pv, n = tonumber(pn) }) end)
+                        note = "[sim: setting " .. pv .. " happiness to " .. pn .. "]"
+                    else
+                        note = "[sim polhappy <faction-id> <0-100>]"
+                    end
                 elseif arg == "dispatch" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "wardesk_force", {}) end) end
                     note = "[sim: forcing a war-desk dispatch from accumulated losses - watch logbook/debuglog for 'WARDESK']"
@@ -463,6 +479,21 @@ function menu.onInput(text)
             end
             menu.history = menu.history or {}
             table.insert(menu.history, { role = "assistant", text = note, err = true })
+            menu.editboxText = ""
+            if menu.active and menu.display then menu.display() end
+            return
+        end
+    end
+    -- #285: politics toggle ("politics off" purges + unlocks every vassal - the Safe Uninstall lesson)
+    do
+        local low = string.lower(text)
+        if low == "politics off" or low == "/politics off" or low == "politics on" or low == "/politics on" then
+            local on = (string.sub(low, -3) == " on")
+            if AddUITriggeredEvent then
+                pcall(function() AddUITriggeredEvent("ai_influence", on and "pol_on" or "pol_off", {}) end)
+            end
+            menu.history = menu.history or {}
+            table.insert(menu.history, { role = "assistant", text = "[Galactic politics " .. (on and "ENABLED" or "DISABLED - vassals released and unlocked") .. ".]", err = true })
             menu.editboxText = ""
             if menu.active and menu.display then menu.display() end
             return

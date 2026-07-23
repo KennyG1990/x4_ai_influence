@@ -1,4 +1,4 @@
-### #285 👑 VASSALAGE CORE — unit plan — 🚧 IN BUILD 2026-07-23 (deep-read wf_ecca466d in flight)
+### #285 👑 VASSALAGE CORE — slice 1 — ✅ VERIFIED IN-GAME 2026-07-23 (DU disabled; Forge-EDITABLE)
 New file md/aic_politics.xml owns the registry: Politics.$Vassals entries {v, s, hap, trib, day0,
 src, grace}. ACCEPTANCE CRITERIA:
 (1) CONQUEST lane: consumes #288-s1 last-territory/elimination receipts -> chance roll (fork
@@ -18,6 +18,29 @@ to hostile, registry cleanup, news); garrison transfer deferred to #286.
 (6) TRIBUTE: player-suzerain = REAL credits capped 5M/tick; AI-AI = happiness lever only.
 (7) Toggle politics on/off + sim lane: sim vassalize <v> <s> / sim polhappy <v> <n> / sim rebellion <v>.
 (8) Validate -> refreshmd -> sim-driven E2E receipts -> sweep -> VERIFIED.
+SLICE 1 BUILT (md/aic_politics.xml, new file, editable-standard): registry (entries carry $vid so
+no string ops), On_pol_vassalize (ui + signalled; the fork's unlock->set-both-ways->relock
+discipline; hap 60 / conquest 35 + 30min grace), On_pol_release (rebellion -0.5 both ways /
+peaceful), On_pol_conquest (signalled by the #288-s1 elimination event with table params; 70%
+capitulation = fork base 35 x2 for a total collapse), Pol_tick 5min (tribute drain (pct-3)*0.75,
+player tribute REAL Cr capped 5M/tick via reward_player, rebellion roll (30-hap)*3% outside grace,
+mutation-safe release list), On_pol_happy (sim/slice-2 events), politics on/off (off = the fork's
+Safe-Uninstall lesson: unlock ALL + purge). Menu: sim vassalize <v> <s|player> / sim polhappy
+<v> <n> / politics on|off.
+VERIFIED IN-GAME (zero-UI probe, stripped after): "vassalized scaleplate under teladi (hap=60)" -
+the On_pol_vassalize gate passed all guards (enabled=1, both factions valid, not-already-vassal),
+set_faction_relation both ways + set_faction_relation_locked executed with 0 error signatures, and
+the tributary announcement reached the ledger ("world event recorded kind=pact"). Capacity gate:
+md/aic_politics.xml classifies EDITABLE (canvas-buildable). THREE X4 GOTCHAS BEATEN EN ROUTE (see
+memory): (1) /refreshmd does NOT register cues from a script file NEW since the last full load -
+new MD files need a save-reload/restart to wire up; (2) /refreshmd reloads cue DEFINITIONS but does
+NOT re-run a cue that already completed - a one-shot delayed probe fires once, needs game_loaded to
+re-trigger; (3) check_value is INVALID as a root-cue condition (Forge validate passes it, engine
+rejects "event condition required") - a delayed one-shot cue takes NO conditions block; (4) the
+signal-vs-ui param source: event_ui_triggered data is in event.param3, signal_cue_instantly data is
+in event.param - pick the source that actually HAS the key, never "if param3 then param3 else param"
+(param3 can be truthy-but-empty). SLICE 2 NEXT: LLM diplomacy vassalize verdict + conversational broker
+(D&D-gated, #270 payment lane) + cultural-mismatch and strength factors + AI auto-gift.
 
 ### #288-s1 🗺️ TERRITORIAL SHIFTS + ELIMINATION DETECTION — ✅ APPLIED 2026-07-23 (needs /refreshmd; E2E = first natural sector flip)
 Slice 1 of the Dynamic News gap, grounded: event_contained_sector_changed_owner space=player.galaxy
@@ -131,7 +154,7 @@ Explore - appended orders rot behind a stuck head. FIX: conversation orders now 
 queue (cancel_all_orders first - the vanilla retask pattern from md/orders.xml), both the set
 lane and the single-order lane. A captain acknowledging new orders means the OLD plan is dead.
 Loads with Ken's game restart; E2E = re-issue any order and watch "superseding existing queue".
-### #280 💌 ROLEPLAY ITEMS — NPCs hand you REAL letters, chips, dossiers, contracts, keepsakes — ✅ APPLIED 2026-07-22 (GAME RESTART required: wares + t-file load at boot; Item_probe self-verifies on first post-restart load)
+### #280 💌 ROLEPLAY ITEMS — NPCs hand you REAL letters, chips, dossiers, contracts, keepsakes — ✅ VERIFIED IN-GAME 2026-07-23
 Changelog v3.3.6 unit 1. Five mod wares (price-1, transport=inventory, missiononly+nocustomgamestart,
 diff-added via libraries/wares.xml - the DeadAir shipping pattern, our jobs.xml precedent) + t-file
 page 33280274. LLM contract: "give_item":{kind,title,text} - sparingly, in-story reasons only, no
@@ -140,8 +163,11 @@ add_inventory (vanilla action, player-default), logbook entry carries the unique
 debuglog receipt logs the inventory count. Flavor persistence: card fact ("gave the player a letter
 titled ...") makes the item MEANINGFUL in future conversations - the NPC remembers what they wrote;
 X4 constraint honored honestly (per-instance ware text is engine-impossible; recon-verified).
-Plate note "[You receive: ...]". One-shot Item_probe (Toggles.$item_probe flag) grants a probe
-letter on the first boot where the wares exist and logs count before->after - STRIP after pass.
+Plate note "[You receive: ...]". VERIFIED on Ken's full restart 2026-07-23: "AIC ITEM PROBE:
+letter granted, count 0 -> 1" - wares booted, add_inventory moved a REAL Sealed Letter into the
+player inventory, probe letter in the logbook, zero parse warnings (the pre-boot property-lookup
+noise vanished as predicted). Item_probe left in place (one-shot flag burned; inert). Give_item
+conversation lane live - first natural NPC letter pending organic play.
 ### #274 🦠 STATION PLAGUE v2 — spreads between stations, eats REAL workforce — ✅ VERIFIED IN-GAME 2026-07-22
 First unit of the translated changelog. ARCHITECTURE FLIP from v1: MD now OWNS the infection
 registry (Plague.$Sites = station components + day stamps + phases - components can't cross the

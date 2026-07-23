@@ -85,13 +85,18 @@
             </do_if>
             <do_elseif value="$ord == 'trade'">
               <!-- #264: vanilla AutoTrade default behaviour (needs-in-game-verify) -->
-              <create_order object="$pship" id="'AutoTrade'"/>
+              <create_order object="$pship" id="'TradeRoutine'">
+                <param name="warebasket" value="$pship.warebasket.list"/>
+                <param name="duration" value="1h"/>
+              </create_order>
               <show_notification text="'Order acknowledged: ' + $pship.knownname + ' commencing automated trading'"/>
               <debug_text text="'AIC player_order TRADE -> ' + $pship.idcode" filter="general"/>
             </do_elseif>
             <do_elseif value="$ord == 'mine'">
               <!-- #264: vanilla AutoMine default behaviour (needs-in-game-verify) -->
-              <create_order object="$pship" id="'AutoMine'"/>
+              <create_order object="$pship" id="'MiningRoutine'">
+                <param name="duration" value="1h"/>
+              </create_order>
               <show_notification text="'Order acknowledged: ' + $pship.knownname + ' commencing automated mining'"/>
               <debug_text text="'AIC player_order MINE -> ' + $pship.idcode" filter="general"/>
             </do_elseif>
@@ -111,7 +116,7 @@
             </do_elseif>
             <do_elseif value="$ord == 'collect'">
               <!-- #264: vanilla drop-collection behaviour (needs-in-game-verify) -->
-              <create_order object="$pship" id="'CollectDropsRegular'"/>
+              <create_order object="$pship" id="'CollectDropsInRadius'"/>
               <show_notification text="'Order acknowledged: ' + $pship.knownname + ' sweeping for floating cargo'"/>
               <debug_text text="'AIC player_order COLLECT -> ' + $pship.idcode" filter="general"/>
             </do_elseif>
@@ -319,7 +324,7 @@
                   </create_order>
                 </do_elseif>
                 <do_elseif value="$sv == 'collect'">
-                  <create_order object="$pship2" id="'CollectDropsRegular'"/>
+                  <create_order object="$pship2" id="'CollectDropsInRadius'"/>
                 </do_elseif>
               </do_elseif>
               <do_elseif value="$sv == 'follow'">
