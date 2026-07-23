@@ -662,11 +662,11 @@
               </do_if>
             </do_if>
             <do_if value="$tp.$rem le 0">
-              <write_to_logbook category="news" title="'Trade Pact Fulfilled'" text="'The supply agreement between ' + faction.{$tp.$a}.knownname + ' and ' + faction.{$tp.$b}.knownname + ' has been fulfilled; convoys delivered the last ' + @$tp.$w.name + ' consignments.'"/>
+              <!-- #290 fog-of-war: an inter-faction commercial pact is secret-terms - no public News line -->
               <set_value name="$curAB" exact="faction.{$tp.$b}.relationto.{faction.{$tp.$a}}"/>
               <set_faction_relation faction="faction.{$tp.$b}" otherfaction="faction.{$tp.$a}" value="[($curAB + 0.01), 1.0].min"/>
               <set_faction_relation faction="faction.{$tp.$a}" otherfaction="faction.{$tp.$b}" value="[($curAB + 0.01), 1.0].min"/>
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $tp.$a + '|b=' + $tp.$b + '|to=' + faction.{$tp.$b}.knownname + ' completed its supply pact with ' + faction.{$tp.$a}.knownname + ', goodwill grows'"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $tp.$a + '|b=' + $tp.$b + '|vis=secret-terms|to=|tt=' + faction.{$tp.$b}.knownname + ' completed its ' + @$tp.$w.name + ' supply pact with ' + faction.{$tp.$a}.knownname"/>
               <set_value name="TradeCouncil.$Pact" exact="table[]"/>
               <debug_text text="'AIC TRADE pact FULFILLED ' + $tp.$a + ' + ' + $tp.$b" filter="general"/>
             </do_if>
@@ -758,13 +758,15 @@
                  CARGO is never falsified - only the STORY about it. -->
             <set_value name="$truth" exact="faction.{$pd.$b}.knownname + ' signs a supply pact: ' + $qty + ' ' + @$pd.$w.name + ' for ' + faction.{$pd.$a}.knownname"/>
             <do_if value="event.param3.$deceive? and event.param3.$deceive and event.param3.$false_statement?">
-              <write_to_logbook category="news" title="'Trade Pact Signed'" text="event.param3.$false_statement"/>
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|to=' + event.param3.$false_statement + '|tt=' + $truth"/>
+              <!-- #290: the false announcement is no longer BROADCAST to News; it propagates as
+                   outsider-facing intel via conversations/spies (to=lie) while insiders know the truth (tt). -->
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|to=' + event.param3.$false_statement + '|tt=' + $truth"/>
               <debug_text text="'AIC TRADE pact signed with DECEPTIVE announcement (' + $pd.$a + '/' + $pd.$b + ')'" filter="general"/>
             </do_if>
             <do_else>
-              <write_to_logbook category="news" title="'Trade Pact Signed'" text="(if event.param3.$statement? then event.param3.$statement else $truth) + ' (' + $qty + ' units, phased deliveries.)'"/>
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|to=' + $truth"/>
+              <!-- #290 fog-of-war: a private commercial pact - no public News line; terms known only to
+                   the signatories (tt) and acquirers. -->
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|to=|tt=' + $truth"/>
             </do_else>
             <debug_text text="'AIC TRADE pact SIGNED ' + $pd.$b + ' -> ' + $pd.$a + ': ' + $qty + ' x ' + @$pd.$w"/>
           </do_if>

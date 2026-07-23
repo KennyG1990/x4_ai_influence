@@ -828,6 +828,7 @@ function AI_Influence.AddWorldEvent(evts, kind, a, b, to, day, extra)
         if extra.i ~= nil then e.i = tonumber(extra.i) end
         if extra.ap ~= nil then e.ap = tostring(extra.ap) end
         if extra.tt ~= nil and extra.tt ~= "" then e.tt = tostring(extra.tt) end   -- #269: insider truth
+        if extra.vis ~= nil and extra.vis ~= "" then e.vis = tostring(extra.vis) end  -- #290: visibility (public|secret-strategic|secret-terms)
     end
     evts[#evts + 1] = e
     while #evts > WORLDEV_CAP do table.remove(evts, 1) end
@@ -856,8 +857,8 @@ function AI_Influence.WorldEventLines(evts, k, viewer)
             local vfac2 = (type(viewer) == "table") and tostring(viewer.faction or "") or ""
             if e.tt and vfac2 ~= "" and (e.a == vfac2 or e.b == vfac2) then
                 out[#out + 1] = e.tt
-            else
-                out[#out + 1] = e.to
+            elseif e.to and e.to ~= "" then
+                out[#out + 1] = e.to   -- #290: a secret event carries to='' so outsiders learn nothing here
             end
         elseif tostring(e.k):sub(1, 4) == "dyn_" then
             -- U2 (#240): generated-event eligibility (Bannerlord spread port): involved faction
@@ -867,7 +868,8 @@ function AI_Influence.WorldEventLines(evts, k, viewer)
             local imp = tonumber(e.i) or 5
             local involved = (e.a == "all") or (vfac ~= "" and (e.a == vfac or e.b == vfac))
             local roleok = (e.ap == nil) or (e.ap == "all") or (e.ap == vrole)
-            if (involved and roleok) or imp >= 8 or vfac == "" then out[#out + 1] = e.to end
+            local pub = (e.vis == nil or e.vis == "public")   -- #290: the public-viewer bypass is public-only
+            if (involved and roleok) or imp >= 8 or (vfac == "" and pub) then out[#out + 1] = e.to end
         else out[#out + 1] = "relations between " .. e.a .. " and " .. e.b .. " have shifted to " .. (e.to ~= "" and e.to or "a new footing") end
     end
     return out
@@ -881,14 +883,14 @@ function AI_Influence.HydrateWorldEvents()
     AI_Influence.LoadCard(WORLDEV_TOKEN, function(card)
         local stored = (type(card) == "table" and type(card.evts) == "table") and card.evts or {}
         local mem = AI_Influence._worldEvents or {}
-        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap, tt = e.tt }) end
+        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap, tt = e.tt, vis = e.vis }) end  -- #290-s1b: preserve visibility across reload (was dropping vis -> fog leaked)
         AI_Influence._worldEvents = stored
         log("world-events ledger hydrated n=" .. tostring(#stored))
     end)
 end
 function AI_Influence.OnWorldEvent(param)
     local g = AI_Influence.parseBackendConfig(param)  -- same k=v| wire format
-    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay(), { tt = g.tt })
+    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay(), { tt = g.tt, vis = g.vis, ap = g.ap })
     persistWorldEvents()
     log("world event recorded kind=" .. tostring(g.kind) .. " n=" .. tostring(#AI_Influence._worldEvents))
 end
@@ -2015,10 +2017,7 @@ function AI_Influence.DynEventGenerate(ty)
         if apl ~= "manager" and apl ~= "crew" and apl ~= "marine" then apl = "all" end
         AI_Influence._worldEvents = AI_Influence.AddWorldEvent(cur, "dyn_" .. t2, fa, fb, payload, gameDay(), { i = imp, ap = apl })
         persistWorldEvents()
-        if AddUITriggeredEvent then
-            pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
-                title = "Galactic News: " .. title, body = desc, sender = "Galaxy News Service", priority = "low" }) end)
-        end
+        -- #289: galactic-news events no longer ping Messages; spool-fed into the 15-min GNN newscast
         log("DYNEVENT accepted type=" .. t2 .. " imp=" .. tostring(tonumber(ev.importance) or 5) .. " facs=" .. fa .. "/" .. fb .. " title=" .. title)
         -- U3 (#246): bounded economic effects - ONLY economic events (spec 5.3), payout CLAMPED in
         -- CODE 50k..300k (improving on Bannerlord's prompt-only bounds), executed via the proven
@@ -2092,10 +2091,7 @@ end
 function AI_Influence.ContagionAnnounce(st, text)
     AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "contagion", tostring(st.fac or ""), "", text, gameDay())
     persistWorldEvents()
-    if AddUITriggeredEvent then
-        pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
-            title = "Health Advisory", body = text, sender = "Sector Health Authority", priority = "low" }) end)
-    end
+    -- #289: health advisories no longer ping Messages; spool-fed into the 15-min GNN newscast
     log("CONTAGION " .. tostring(st.phase or "clear") .. ": " .. text)
 end
 -- #274: seeding is MD-side now (random civilized station -> Plague.$Sites registry).
@@ -3339,15 +3335,9 @@ function AI_Influence.SyncInfluence(saveId)
             -- (ai_influence_galaxynews.xml: log_diplomacy/log_news/log_general/log_alerts) write the
             -- logbook + notification in MD context (the only one X4 renders). AddUITriggeredEvent works
             -- from this async callback (the suggestion wheel uses it). SPEC 1d-S: route by item.category.
-            if content.news then
-                for _, item in ipairs(content.news) do
-                    local txt = (type(item) == "table") and item.text or tostring(item)
-                    local cat = (type(item) == "table") and item.category or "diplomacy"
-                    if txt and txt ~= "" then
-                        pcall(function() AddUITriggeredEvent("ai_influence", "log_" .. tostring(cat), tostring(txt)) end)
-                    end
-                end
-            end
+            -- #290: the bridge news->log_<cat> loop is RETIRED. #289 made the GNN newscast the single
+            -- news channel; this legacy per-item push (the source of the repeated "News update:" lines if a
+            -- bridge re-feeds vanilla logbook strings) is gone, so the uncontrolled soft lanes cannot spam.
             -- SPEC 1d-W2: REAL relation changes -> the proven On_action MD cue (ai_influence_contract.xml ->
             -- set_faction_relation -> X4 fleets fight). MUST rebuild a FRESH plain Lua table (like the chat
             -- action path) with tonumber(relation); passing the raw getJson table does NOT round-trip through
@@ -4081,81 +4071,121 @@ local function init()
         if not text then return end
         AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "contagion", tostring(g.f or ""), "", text, gameDay())
         persistWorldEvents()
-        if AddUITriggeredEvent then
-            pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
-                title = "Health Advisory", body = text, sender = "Sector Health Authority", priority = "low" }) end)
-        end
+        -- #289: health advisories no longer ping Messages; spool-fed into the 15-min GNN newscast
         if g.k == "outbreak" and sec ~= "" and sec ~= "?" then
             AI_Influence.MintContract("job=cg_" .. tostring(gameDay()) .. "|faction=" .. tostring(g.f or "argon") .. "|reward=180000|verb=patrol|sector=" .. sec
                 .. "|title=Quarantine Support Patrol|summary=Patrol the quarantine perimeter in " .. sec .. " while relief convoys move in.")
         end
         log("PLAGUE " .. tostring(g.k) .. ": " .. text)
     end)
-    -- #283: the WAR DESK - engine-verified front losses become ONE written dispatch. Named
-    -- fallen officers are invented (culture-fitting) but their deaths ride real capital losses,
-    -- and the ledger remembers them: the dead stay dead in future conversations.
-    RegisterEvent("AIChat.war_dispatch", function(_, param)
-        -- lazy-json gotcha (#283 fix): a fresh reload's first dispatch can arrive before ANY lane
-        -- has initialized json - load it the house way instead of silently bailing
+    -- #289 THE GALACTIC NEWSCAST - one anchor broadcast every ~15 min replaces the per-event
+    -- Messages-inbox pings. MD (Pulse_tick, every 3rd tick) hands this the cycle's fresh war
+    -- losses + a live galaxy snapshot; we read the accumulated world-event spool for the other
+    -- beats, and the LLM authors a flowing evening-news roundup (war / diplomacy / economy) plus
+    -- 1-2 cosmetic human-interest items for colour. Written to the News logbook tab, never Messages.
+    RegisterEvent("AIChat.newscast", function(_, param)
+        -- lazy-json gotcha: a fresh reload's first cast can arrive before any lane inits json
         if not (json and json.decode) then ensureDjfhe() end
-        if not (json and json.decode) then log("WARDESK: json not ready") return end
-        local ls = tostring(param or ""):match("^losses=(.*)$") or ""
-        local parts, tot = {}, 0
-        local hardest, hmax = "", 0
-        for fid, n in ls:gmatch("([%w]+)=(%d+)") do
-            local c = tonumber(n) or 0
-            parts[#parts + 1] = fid .. " lost " .. c .. " warships"
-            tot = tot + c
-            if c > hmax then hmax = c; hardest = fid end
+        if not (json and json.decode) then log("NEWSCAST: json not ready") return end
+        local g = AI_Influence.parseBackendConfig(param) or {}
+        local warstr = tostring(g.war or "")
+        local warline = ""
+        if warstr ~= "" then
+            local wp = {}
+            for fid, n in warstr:gmatch("([%a]+)=(%d+)") do wp[#wp + 1] = fid .. " lost " .. n .. " warships" end
+            if #wp > 0 then warline = table.concat(wp, "; ") end
         end
         local evts = AI_Influence._worldEvents or {}
-        local ctxl = {}
-        for i = math.max(1, #evts - 7), #evts do
+        local total = #evts
+        local last = tonumber(AI_Influence._lastCastIdx) or 0
+        if last < 0 or last > total then last = 0 end
+        local startI = last + 1
+        if (total - startI) > 15 then startI = total - 15 end
+        if startI < 1 then startI = 1 end
+        local feed = {}
+        for i = startI, total do
             local e = evts[i]
-            if e then ctxl[#ctxl + 1] = "- " .. tostring(e.to) end
+            -- #290 fog-of-war: the public bulletin NEVER narrates a secret-strategic/secret-terms event
+            if e and (e.vis == nil or e.vis == "public") and e.to and tostring(e.to) ~= "" then
+                feed[#feed + 1] = "- [" .. tostring(e.k or "event") .. "] " .. tostring(e.to)
+            end
         end
-        local datum
-        if #parts > 0 then
-            datum = table.concat(parts, "; ")
-        else
-            datum = "no significant fleet losses this cycle - the fronts are quiet"
-        end
-        local sys = "You are the war desk of a galactic news service in the X4 universe (faction ids:"
-            .. " argon, antigone, teladi, ministry, paranid, holyorder, split, freesplit, xenon, khaak,"
-            .. " scaleplate, buccaneers, pioneers, hatikvah, boron, terran)."
-            .. " THIS CYCLE!S VERIFIED FRONT DATA (ground truth, engine-measured): " .. datum .. "."
-            .. " RECENT CONTEXT (history - build on it, never contradict it):\n" .. table.concat(ctxl, "\n")
-            .. "\nWrite ONE war dispatch: 4-6 sentences, concrete and human - momentum, cost, what it"
-            .. " means for ordinary spacers. Name sectors ONLY if they appear in the context above."
-            .. " If any single faction lost 10 or more warships, include the death of ONE commanding"
-            .. " officer (invent a culturally fitting name for that faction, rank commodore or admiral)"
-            .. " lost with a capital ship."
-            .. ' Return STRICT JSON: {"title":"<10-50 chars, no faction ids>","dispatch":"<the piece>",'
-            .. '"fallen":"<officer name, or empty string>","faction":"<hardest-hit faction id>"}'
-        log("WARDESK generating (total losses " .. tot .. ")")
+        local devs = (#feed > 0) and table.concat(feed, "\n") or "(no other major developments logged this cycle)"
+        local snapbits = {}
+        if tostring(g.hot or "") ~= "" then snapbits[#snapbits + 1] = "active war fronts: " .. tostring(g.hot) end
+        if tostring(g.econ or "") ~= "" then snapbits[#snapbits + 1] = "stations in supply crisis: " .. tostring(g.econ) end
+        if tostring(g.trib or "") ~= "" then snapbits[#snapbits + 1] = "tributary tensions: " .. tostring(g.trib) end
+        local snap = (#snapbits > 0) and table.concat(snapbits, "; ") or ""
+        local sys = "You are the anchor of the Galactic News Network (GNN), the evening news of the X4"
+            .. " universe (factions: Argon, Antigone, Teladi, Ministry of Finance, Paranid, Holy Order,"
+            .. " Zyarth/Split, Free Families, Boron, Terran, Pioneers, Hatikvah, Scale Plate, Buccaneers,"
+            .. " plus the hostile Xenon and Kha'ak).\n"
+            .. "THIS CYCLE'S VERIFIED GROUND TRUTH (engine-measured - build on it, never contradict it):\n"
+            .. (warline ~= "" and ("WAR FRONTS: " .. warline .. "\n") or "WAR FRONTS: the fronts are relatively quiet this cycle.\n")
+            .. "RECENT DEVELOPMENTS:\n" .. devs .. "\n"
+            .. (snap ~= "" and ("GALAXY SNAPSHOT: " .. snap .. "\n") or "")
+            .. "Deliver ONE cohesive news broadcast of 6-10 sentences that flows across the beats with"
+            .. " material this cycle - the war fronts, diplomacy and politics, and the economy. Warm and"
+            .. " vivid, like a real evening roundup: momentum, cost, what it means for ordinary spacers."
+            .. " THEN close with 1-2 SHORT human-interest items purely for colour (a notable death, a"
+            .. " wedding, a rare-mineral strike, a strange new invention, a festival, an odd crime) -"
+            .. " invent culturally-fitting names. Those colour items are cosmetic ONLY and must NOT imply"
+            .. " any change to ships, money, territory or fleets. Some items matter, some are just texture.\n"
+            .. 'Return STRICT JSON: {"headline":"<12-64 chars, no faction ids>","broadcast":"<the full multi-paragraph newscast>"}'
+        log("NEWSCAST generating (war='" .. warstr .. "' devs=" .. #feed .. ")")
         AI_Influence.SendDirect({ { role = "system", content = sys } },
-            { max_tokens = 380, response_format = { type = "json_object" } },
+            { max_tokens = 750, response_format = { type = "json_object" } },
         function(ok, raw)
-            if not ok then log("wardesk call failed") return end
+            if not ok then log("newscast call failed") return end
             local okj, obj = pcall(json.decode, raw)
-            if not (okj and type(obj) == "table") then log("WARDESK rejected: unparseable") return end
+            if not (okj and type(obj) == "table") then log("NEWSCAST rejected: unparseable") return end
+            local head = tostring(obj.headline or ""):sub(1, 70)
+            local body = tostring(obj.broadcast or ""):sub(1, 2200)
+            if #head < 6 or #body < 120 then log("NEWSCAST rejected: too short (" .. #head .. "/" .. #body .. ")") return end
+            writeToLogbook("GNN - " .. head, body)
+            AI_Influence._lastCastIdx = total
+            log("NEWSCAST published: " .. head)
+        end)
+    end)
+    -- #287a: LLM POLITICAL EVENTS - MD hands the real vassalage state, the LLM authors the event
+    -- + a loyalty swing; we write it to the ledger/news and dispatch the swing back to MD.
+    RegisterEvent("AIChat.pol_event", function(_, param)
+        if not (json and json.decode) then ensureDjfhe() end
+        if not (json and json.decode) then log("POLEVENT: json not ready") return end
+        local g = AI_Influence.parseBackendConfig(param)
+        if not g or not g.v then return end
+        local vn = tostring(g.vn or g.v)
+        local sn = tostring(g.sn or g.s or "their suzerain")
+        local hap = tonumber(g.hap) or 50
+        local mm = tostring(g.mm) == "1"
+        local sys = "You are the political correspondent of a galactic news service in the X4 universe. "
+            .. vn .. " is a TRIBUTARY (vassal) of " .. sn .. ". Their current loyalty is " .. hap .. "/100"
+            .. (mm and " and they are a DIFFERENT species than their suzerain, so cultural friction runs high" or "")
+            .. ". Invent ONE political development in this vassalage this cycle - cultural exchange, trade"
+            .. " boom, scandal, tribute dispute, an act of loyalty, simmering unrest, or wartime strain -"
+            .. " fitting the loyalty level (low loyalty leans to tension/unrest, high leans to harmony)."
+            .. " Write it as a vivid 2-3 sentence news item, then give its effect on loyalty."
+            .. ' Return STRICT JSON: {"title":"<8-40 chars, no faction ids>","event":"<2-3 sentences>",'
+            .. '"happiness_delta":<integer -8 to 8, negative for unrest/scandal, positive for harmony>}'
+        log("POLEVENT generating for " .. tostring(g.v) .. " (hap " .. hap .. ")")
+        AI_Influence.SendDirect({ { role = "system", content = sys } },
+            { max_tokens = 240, response_format = { type = "json_object" } },
+        function(ok, raw)
+            if not ok then log("polevent call failed") return end
+            local okj, obj = pcall(json.decode, raw)
+            if not (okj and type(obj) == "table") then log("POLEVENT rejected: unparseable") return end
             local title = tostring(obj.title or ""):sub(1, 50)
-            local body = tostring(obj.dispatch or ""):sub(1, 600)
-            if #title < 5 or #body < 60 then log("WARDESK rejected: too short") return end
-            local fal = tostring(obj.fallen or ""):sub(1, 40)
-            local ffid = tostring(obj.faction or hardest):lower():sub(1, 24)
-            writeToLogbook("War Dispatch - " .. title, body)
-            AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "combat", ffid, "", title .. ": " .. body:sub(1, 200), gameDay())
+            local body = tostring(obj.event or ""):sub(1, 400)
+            if #title < 4 or #body < 30 then log("POLEVENT rejected: too short") return end
+            local delta = math.max(-8, math.min(8, math.floor(tonumber(obj.happiness_delta) or 0)))
+            writeToLogbook("Vassalage - " .. title, body)
+            AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, "pact", tostring(g.s or ""), tostring(g.v or ""), title .. ": " .. body:sub(1, 200), gameDay())
             persistWorldEvents()
-            if fal ~= "" then
-                AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents, "combat", ffid, "", "Fallen in action: " .. fal .. ", lost with their ship on the " .. ffid .. " front", gameDay())
-                persistWorldEvents()
-            end
             if AddUITriggeredEvent then
-                pcall(function() AddUITriggeredEvent("ai_influence", "comms_incoming", {
-                    title = "War Dispatch - " .. title, body = body, sender = "GNN War Desk", priority = "low" }) end)
+                pcall(function() AddUITriggeredEvent("ai_influence", "pol_happy_delta", { v = tostring(g.v), delta = delta }) end)
             end
-            log("WARDESK published: " .. title .. ((fal ~= "") and (" (fallen: " .. fal .. ")") or ""))
+            -- #289: political events no longer ping Messages; the pact event is spool-fed into the GNN newscast
+            log("POLEVENT published: " .. title .. " (delta " .. delta .. ")")
         end)
     end)
     -- #243: MD pushes the persisted toggles on every load; the chat-box commands persist back

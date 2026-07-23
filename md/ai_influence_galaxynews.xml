@@ -114,8 +114,8 @@
          unordered faction-pair relation (same thresholds as the U1 standing buckets) and compare against the
          SAVE-PERSISTED snapshot on this namespaced cue. On a bucket TRANSITION, write the logbook (and notify
          for war). First run seeds silently. Zero LLM calls, zero bridge, all state inside the save. -->
-    <!-- #283: 'sim dispatch' - force the war desk to file NOW with whatever has accumulated
-         (an empty cycle files an honest quiet-fronts piece) -->
+    <!-- #289: 'sim dispatch' - force a GNN newscast NOW from accumulated losses + the spool
+         (an empty cycle still files an honest quiet-day bulletin with flavour) -->
     <!-- #288: TERRITORIAL SHIFTS (Dynamic News gap, from the du-fork feature map). One cue hears
          EVERY sector ownership flip galaxy-wide (vanilla event, finalisestations gamestart-guard
          pattern). Faction ids resolved by comparison - faction objects stringify to display
@@ -143,10 +143,17 @@
                 <set_value name="$oid" exact="$Fids.{$fi}"/>
               </do_if>
             </do_all>
-            <set_value name="$nname" exact="if $fnew.knownname? then $fnew.knownname else 'an unknown power'"/>
-            <set_value name="$oname" exact="if $fold.knownname? then $fold.knownname else 'an unknown power'"/>
-            <write_to_logbook category="news" title="'Territorial Shift'" text="$fsec.knownname + ' has changed hands: ' + $oname + ' cedes control to ' + $nname + '.'"/>
-            <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $nid + '|b=' + $oid + '|to=' + $fsec.knownname + ' has changed hands: ' + $oname + ' cedes control to ' + $nname"/>
+            <set_value name="$nname" exact="if $fnew.knownname? and $fnew.knownname != '' then $fnew.knownname else ''"/>
+            <set_value name="$oname" exact="if $fold.knownname? and $fold.knownname != '' then $fold.knownname else 'an unknown power'"/>
+            <do_if value="$nname != ''">
+              <write_to_logbook category="news" title="'Territorial Shift'" text="$fsec.knownname + ' has changed hands: ' + $oname + ' cedes control to ' + $nname + '.'"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=' + $nid + '|b=' + $oid + '|to=' + $fsec.knownname + ' has changed hands: ' + $oname + ' cedes control to ' + $nname"/>
+            </do_if>
+            <do_else>
+              <!-- #290 empty-name fix: the sector became unclaimed (no new owner) - never print 'to .' -->
+              <write_to_logbook category="news" title="'Territorial Shift'" text="$fsec.knownname + ' has fallen out of ' + $oname + ' control and now lies unclaimed.'"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=combat|a=|b=' + $oid + '|to=' + $fsec.knownname + ' has fallen out of ' + $oname + ' control and now lies unclaimed'"/>
+            </do_else>
             <debug_text text="'AIC TERRITORY flip ' + $fsec.knownname + ': ' + $oid + ' -> ' + $nid" filter="general"/>
             <!-- elimination derivation: does the loser hold ANY sector now? -->
             <do_if value="$oid != '' and $oid != 'xenon' and $oid != 'khaak'">
@@ -184,8 +191,8 @@
         <do_if value="Galaxy_pulse.$Snap? and Galaxy_pulse.$Snap.{'$wacc_total'}?">
           <set_value name="Galaxy_pulse.$Snap.{'$wacc_total'}" exact="0"/>
         </do_if>
-        <raise_lua_event name="'AIChat.war_dispatch'" param="'losses=' + $wstr"/>
-        <debug_text text="'AIC WARDESK FORCED losses=' + $wstr" filter="general"/>
+        <raise_lua_event name="'AIChat.newscast'" param="'war=' + $wstr + '|hot=|econ='"/>
+        <debug_text text="'AIC NEWSCAST FORCED (sim dispatch) losses=' + $wstr" filter="general"/>
       </actions>
     </cue>
     <cue name="Galaxy_pulse" namespace="this">
@@ -337,7 +344,9 @@
                         <set_value name="$payer" exact="if $cntA le $cntB then $fa else $fb"/>
                         <set_value name="$payee" exact="if $cntA le $cntB then $fb else $fa"/>
                         <set_value name="Galaxy_pulse.$Snap.{'$w_' + $fa + '_' + $fb}" exact="table[$payer = $payer, $payee = $payee, $left = 3]"/>
-                        <write_to_logbook category="diplomacy" title="'Reparations'" text="'Under the ceasefire terms, ' + faction.{$payer}.knownname + ' (holding ' + [$cntA, $cntB].min + ' stations to the victor with ' + [$cntA, $cntB].max + ') will pay 900,000 Cr in war reparations to ' + faction.{$payee}.knownname + '.'"/>
+                        <!-- #290 fog-of-war: reparation TERMS are secret-terms (private settlement + a
+                             strength leak of who is weaker). No public line; belligerents + acquirers only. -->
+                        <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $payer + '|b=' + $payee + '|vis=secret-terms|to=|tt=' + faction.{$payer}.knownname + ' agreed to pay 900,000 Cr in war reparations to ' + faction.{$payee}.knownname + ' under the ceasefire terms'"/>
                         <debug_text text="'AIC reparation minted ' + $payer + ' -> ' + $payee + ' (stations ' + $cntA + '/' + $cntB + ')'" filter="general"/>
                       </do_if>
                       <do_else>
@@ -360,7 +369,7 @@
                     <transfer_money from="faction.{$ob.$payer}" to="faction.{$ob.$payee}" amount="300000Cr"/>
                     <set_value name="$ob.$left" operation="subtract"/>
                     <set_value name="$tribs" exact="$tribs + $ob.$payer + '>' + $ob.$payee + '=' + $ob.$left + ';'"/>
-                    <write_to_logbook category="diplomacy" title="'Reparation Payment'" text="faction.{$ob.$payer}.knownname + ' has transferred a 300,000 Cr reparation installment to ' + faction.{$ob.$payee}.knownname + ' (' + $ob.$left + ' remaining).'"/>
+                    <!-- #290 fog-of-war: per-installment reparation payments are secret-terms - no public line -->
                     <debug_text text="'AIC reparation paid ' + $ob.$payer + ' -> ' + $ob.$payee + ' left=' + $ob.$left + ' payer_bal=' + (if faction.{$ob.$payer}.money? then faction.{$ob.$payer}.money else 'n/a') + ' payee_bal=' + (if faction.{$ob.$payee}.money? then faction.{$ob.$payee}.money else 'n/a')" filter="general"/>
                   </do_if>
                   <do_if value="$ob.$left le 0">
@@ -426,11 +435,13 @@
             </do_if>
             <debug_text text="'AIC pulse econ_checked=' + $econChecked + ' econ_events=' + $econEvents" filter="general"/>
             <debug_text text="'AIC-STATE diplo hot=[' + $hotpairs + '] trib=[' + $tribs + '] econ_short=[' + $shortlist + '] player_sector=' + (if player.sector.exists and player.sector.knownname? then player.sector.knownname else '?')" filter="general"/>
-            <!-- #283: the WAR DESK files when there is a story - not on a clock -->
-            <set_value name="$wtot" exact="if Galaxy_pulse.$Snap.{'$wacc_total'}? then Galaxy_pulse.$Snap.{'$wacc_total'} else 0"/>
-            <set_value name="$wlast" exact="if Galaxy_pulse.$Snap.{'$wdisp_t'}? then Galaxy_pulse.$Snap.{'$wdisp_t'} else 0s"/>
-            <do_if value="$wtot ge 25 and (player.age - $wlast) ge 20min">
-              <set_value name="Galaxy_pulse.$Snap.{'$wdisp_t'}" exact="player.age"/>
+            <!-- #289 THE GALACTIC NEWSCAST: every 3rd pulse (~15 min) the accumulated war losses
+                 + a live galaxy snapshot feed ONE anchor broadcast (Lua LLM) -> the News logbook tab.
+                 Replaces the per-event war dispatch AND all the Messages-inbox pushes: galaxy news now
+                 reads like an evening bulletin, not a stream of single "someone is here" pings. -->
+            <set_value name="Galaxy_pulse.$Snap.{'$castn'}" exact="(if Galaxy_pulse.$Snap.{'$castn'}? then Galaxy_pulse.$Snap.{'$castn'} else 0) + 1"/>
+            <do_if value="Galaxy_pulse.$Snap.{'$castn'} ge 3">
+              <set_value name="Galaxy_pulse.$Snap.{'$castn'}" exact="0"/>
               <set_value name="$wstr" exact="''"/>
               <do_for_each name="$wfx" in="['argon','antigone','teladi','ministry','paranid','holyorder','split','freesplit','xenon','khaak','scaleplate','buccaneers','pioneers','hatikvah','boron','terran']">
                 <do_if value="Galaxy_pulse.$Snap.{'$wacc_' + $wfx}? and Galaxy_pulse.$Snap.{'$wacc_' + $wfx} gt 0">
@@ -439,8 +450,8 @@
                 </do_if>
               </do_for_each>
               <set_value name="Galaxy_pulse.$Snap.{'$wacc_total'}" exact="0"/>
-              <raise_lua_event name="'AIChat.war_dispatch'" param="'losses=' + $wstr"/>
-              <debug_text text="'AIC WARDESK dispatching losses=' + $wstr" filter="general"/>
+              <raise_lua_event name="'AIChat.newscast'" param="'war=' + $wstr + '|hot=' + (if $hotpairs? then $hotpairs else '') + '|econ=' + (if $shortlist? then $shortlist else '')"/>
+              <debug_text text="'AIC NEWSCAST cue: war=' + $wstr + ' hot=' + (if $hotpairs? then $hotpairs else '')" filter="general"/>
             </do_if>
             <reset_cue cue="Pulse_tick"/>
           </actions>

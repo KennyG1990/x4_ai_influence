@@ -353,7 +353,7 @@
           </do_if>
           <do_if value="$d.$statement? and $d.$statement != ''">
             <set_value name="$srcname" exact="if $d.$speaker? and faction.{$d.$speaker}? then faction.{$d.$speaker}.knownname else 'Galactic Diplomatic Service'"/>
-            <write_incoming_message source="$srcname" title="'Diplomatic Statement'" text="$d.$statement" highpriority="false"/>
+            <!-- #289: diplomatic statements no longer ping Messages - Logbook Diplomacy tab only -->
             <write_to_logbook category="diplomacy" title="'Diplomatic Statement'" text="$d.$statement"/>
           </do_if>
           <raise_lua_event name="'AIChat.world_event'" param="'kind=shift|a=' + faction.{$d.$a}.knownname + '|b=' + faction.{$d.$b}.knownname + '|to=' + $d.$action"/>

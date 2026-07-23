@@ -1,3 +1,63 @@
+### #287a 🎭 LLM POLITICAL EVENTS — vassalages come alive with authored news — ✅ VERIFIED IN-GAME 2026-07-23 (Forge-EDITABLE)
+The fork's happiness lottery, but every event AUTHORED BY THE LLM (LLM-decides identity). Each
+Pol_eval (~5 min) rolls ~20% to spark one political event in a random vassalage: MD hands the LLM
+the REAL relationship state (vassal, suzerain, loyalty, cultural friction, tribute); the LLM DECIDES
+a fitting development (cultural exchange / trade boom / scandal / tribute dispute / act of loyalty /
+unrest / wartime strain - low loyalty leans tension, high leans harmony), writes it as a 2-3 sentence
+news item, and returns a loyalty swing (-8..+8); MD applies the swing (On_pol_happy_delta). Ledger
+(kind=pact) + Political Desk comms + logbook so NPCs and the war desk reference it. Mirrors the
+verified #283 war-desk SendDirect lane (json guard = ensureDjfhe per the lazy-json rule). Sim:
+'sim polevent'. This is what makes a vassalage FEEL alive between the deterministic ticks.
+VERIFIED IN-GAME (zero-UI probe, stripped): vassalize split under argon @hap34 (cross-race friction)
+-> forced pol_event -> "POLEVENT generating for split (hap 34)" -> LLM authored "Zyarth Tribute
+Dispute Escalates (delta -3)" (a low-loyalty cross-race vassalage correctly got a tension/tribute
+event, not harmony) -> "event delta -3 -> split hap=31" (swing applied). 0 real error signatures.
+NOTE: the Forge debug-watcher reports runtimeErrors=True as a FALSE POSITIVE - our mod tags its own
+debug lines with an [=ERROR=] prefix, which the watcher counts; the reliable field is
+cueLiveness.erroringCount (=0), and the direct signature-grep is authoritative (0). Capacity:
+md/aic_politics.xml EDITABLE.
+
+### #286a 🛡️ GARRISON FROM EXISTING SHIPS — the golden-solution first slice — ✅ VERIFIED IN-GAME 2026-07-23 (Forge-EDITABLE)
+Engine-is-the-treasury, conservation-PURE: on vassalage the suzerain DIVERTS a picket of military
+ships IT ALREADY OWNS to guard the vassal HQ - NO money, NO fabrication. Vanilla's own
+factionsubgoal_defendarea recipe: find_ship_by_true_owner faction=suz commandeerable=true
+primarypurpose=purpose.fight (proves REAL ownership + engine-judged spareability) -> commandeer_object
+(TAKEOVER of an existing hull, NEVER create_ship) -> ProtectPosition at the vassal HQ sector (HQ via
+factionheadquarters, else any owned station's sector). Cap = min(3, 25% of the spare fight-fleet) so
+the suzerain keeps a home-defence floor; NO spare ships => the faction DECIDES to forgo (logged, no
+spawn). Player-suzerain = the player's own real ships. Registry: $E.$garrison = list of the real
+diverted ship components. Release/rebellion cancels their orders -> ships revert to the suzerain,
+never destroyed. Fabrication is IMPOSSIBLE (you cannot divert what you do not own). #286b (real-yard
+builds when a suzerain wants MORE than its idle fleet) + #286c (economy-built embassy) follow on the
+same law.
+VERIFIED IN-GAME (zero-UI probe, stripped): vassalize teladi under argon -> auto-garrison ->
+"argon committed 3 of 13 owned fight ships to guard teladi HQ in Ianamus Zura IV" (cap = min(3,
+13/4) held, 10 kept home); 45s later "pre-release: garrison=3 operational=3" (all diverted hulls
+still ALIVE - real ships, never fabricated, never destroyed); peaceful release -> "garrison released
+- ships revert to suzerain". 0 error signatures. Capacity: md/aic_politics.xml EDITABLE. The golden
+solution proven: real owned hulls diverted, zero money, zero fabrication, clean revert.
+
+### #286 🛡️ VASSAL GARRISON + EMBASSY — REAL-ECONOMY ONLY (Ken's hard law) — 🚧 PLANNED 2026-07-23 (recon wf_cc3cd286 in flight)
+HARD LAW (Ken 2026-07-23): "our system will not fabricate ships from fake stations and fake money.
+All ships must be built at real stations with real money and real resources; if those don't exist
+the faction MUST decide how to proceed." NO create_ship, NO god-spawn, EVER. Decomposition:
+#286a GARRISON FROM EXISTING SHIPS (cleanest, zero-fabrication first slice): on vassalage formation,
+  the suzerain DIVERTS a picket of military ships IT ALREADY OWNS (find_ship_by_true_owner owner=suz
+  primarypurpose=fight checkoperational, idle/reassignable) to guard the vassal's HQ sector
+  (ProtectPosition). Caps the diversion so the suzerain keeps a home-defence minimum. If it has NO
+  spare ships -> the faction DECIDES to go without (logged honestly, no spawn). Player-suzerain =
+  player's own existing ships. Registry: $E.$garrison = list of the real diverted ship components;
+  pruned on release/rebellion (ships revert to the suzerain, not destroyed).
+#286b GARRISON BUILDING AT REAL YARDS (follow-up): when a suzerain wants MORE than its idle ships,
+  add_build_to_construct_ship at a shipyard it REALLY OWNS (canbuildships/canbuildfor/shiptrader
+  control) with REAL money+resources; the build WAITS if the yard is short (real constraint). No
+  yard/money -> faction decides (divert-existing fallback or forgo). Player builds at player yards
+  with player money.
+#286c EMBASSY: economy-built via invisible create_station + add_build_to_expand_station buildstorage
+  (CV-AI + real resources) at the suzerain's construction yard - the fork's already-correct pattern.
+ACCEPTANCE: every ship/station traced to a REAL pre-existing owned asset or a REAL yard-build; the
+absence path logs a faction DECISION, never a fabrication; sim-driven + probe-verified receipts.
+
 ### #285c 🤝👑 CONVERSATIONAL VASSALAGE BROKER — buy a faction as your tributary through dialogue — ✅ VERIFIED IN-GAME 2026-07-23 (bridge proven; conversational pitch = natural play)
 Slice 2b, the flagship LLM-decides feature - the fork's broker MENU becomes a NEGOTIATION. A
 civilized-faction rep may OFFER to make their people the player's tributary: the LLM decides
@@ -88,6 +148,83 @@ signal-vs-ui param source: event_ui_triggered data is in event.param3, signal_cu
 in event.param - pick the source that actually HAS the key, never "if param3 then param3 else param"
 (param3 can be truthy-but-empty). SLICE 2 NEXT: LLM diplomacy vassalize verdict + conversational broker
 (D&D-gated, #270 payment lane) + cultural-mismatch and strength factors + AI auto-gift.
+
+### #290 🕵️ INFORMATION ASYMMETRY & ESPIONAGE — the flagship arc — DESIGN LOCKED 2026-07-23
+Ken 2026-07-23: the sim knows everything; the PLAYER must not. Military strategy (deployments, movements,
+war plans) + private TERMS (tribute, reparations, trade-pact internals) are SECRET; the player earns them
+(allied+included, or bribe/threaten/spy). And it is TWO-WAY: AI factions spy on the player too. Full vision
+in the [[espionage-system-vision]] memory. A 5-agent audit+design workflow produced the taxonomy + sliced
+plan; the payoff is that it assembles almost ENTIRELY from existing seams (WorldEventLines e.tt/e.to insider
+split, the D&D dice WHETHER-gate, On_transfer + aic_dossier item, #242 informant drop, #228b deception).
+PLAN: A0 data bugs -> A1 visibility tag + newscast filter -> A2 re-route leaking emissions -> B1 knowledge
+model (per-NPC roll + role access tier) -> B2 paid-intel deliverable + allied-sharing -> B3 acquisition verbs
+(bribe/threaten/spy) + false intel -> B4 rumor credibility. OPEN QUESTIONS pending Ken (shape B*): allied
+auto-share vs ask; does intel go stale; is a dossier tradeable; which role tier can HOLD a garrison/tribute
+secret; counter-intel depth (active decoys?); do a belligerent's allies learn terms free; scrub suzerain on
+rebellion; does flying-through (radar) count as free acquisition.
+
+### #290-s1 🔒 FOG-OF-WAR FOUNDATION — classify + hide; a secret can't be stolen until it's secret — ✅ APPLIED 2026-07-23 (needs save-reload; E2E = reload, confirm secrets absent from newscast/logbook)
+Foundation for the espionage arc: HIDE the secrets (acquisition = later slices). 14 changes / 4 files, all
+conservation-safe (hide REAL facts, never fabricate), built on the existing ledger. (1) vis TAG on
+AddWorldEvent + threaded through OnWorldEvent (MD->Lua); (2) the #289 GNN newscast now narrates ONLY
+vis=public events (it was reading e.to RAW - the primary launder); (3) closed the WorldEventLines vfac==''
+public-viewer bypass for secret dyn_ events + skip empty public lines. RE-ROUTED to secret (public line
+gone; real intel as tt, disclosed only to involved factions via the existing insider split): Garrison
+Dispatched (secret-strategic, ap=military - THE flagship leak Ken cited), A New Tributary/vassalage
+(secret-terms), reparation terms + per-installment payments (secret-terms), inter-faction trade-pact terms
+incl. the #269 deceptive variant (secret-terms; the LIE still propagates to outsider conversations, just not
+the public News tab). Player-as-party keeps a PERSONAL record where they own the fleet/pact. BUGS FIXED:
+the empty new-owner name ("cedes control to ." -> "has fallen out of X control and now lies unclaimed"); the
+repeated "News update:" spam (retired the bridge content.news->log_<cat> loop; #289 already made the
+newscast the single news channel). Static gates GREEN (structural/cross-file/schema/aiscript=0, lint clean,
+Forge class unchanged). PENDING in-game E2E (reload -> a seeded garrison/vassalage/trade secret never
+appears in the newscast or an uninvolved NPC's knowledge; public war/econ/territory still do). Deferred to
+s2 + Ken's forks: the acquisition layer (B*), rebellion suzerain-scrub, whether vassalage shows a bare
+public outcome.
+
+### #290-s1b 🔒 FOG SURVIVES RELOAD + the espionage BUILD PLAN locked — ✅ APPLIED 2026-07-23
+A 4-agent spec workflow (vs the real code + Ken's 4 locked decisions) caught a CRITICAL bug in #290-s1:
+HydrateWorldEvents (aic_uix.lua:886) re-added in-memory events with only {i,ap,tt}, DROPPING e.vis - so a
+secret event present at hydrate time reverted to vis=nil (=public) after reload and the fog LEAKED. Fixed
+(one line: preserve vis=e.vis on the re-add). Confirmed EncodeCard/DecodeCard whole-JSON round-trip vis at
+persist/load, so hydrate was the only drop. Static gates green.
+EXPANDED VISION (Ken 2026-07-23, see [[espionage-system-vision]] memory): embed-and-rise sleepers (agent
+climbs ranks -> access grows); FULLY SYMMETRIC actor-agnostic engine (player<->faction<->faction, ally<->ally);
+Total War-level emergent politics/war. Locked decisions: LLM-decides sharing + emergent WITHHOLDING grievance;
+intel DECAYS (as-of age); intel is a TRADEABLE dossier (brokering, caught->relations drop); access = role +
+seniority + participation.
+BUILD PLAN (spec at tasks/wl39nafpz.output - exact insertion points per slice): S0 fog persistence + stable
+secret id (vis DONE; sid/part next) -> S1 faction-id resolution + access tier/domain compute -> S2 access-gate
+rewrite + per-NPC seeded holding roll -> S3 ASK + LLM-decides sharing + withholding tracking -> S4 paid/coerced
+acquisition + dossier payoff -> S5 insert-own-agent infiltration (KILL/CAPTURE/EXPOSED) + false intel -> S6
+staleness + brokering -> S7 AI symmetry + counter-intel. Residual forks for Ken: rebellion suzerain-scrub;
+radar/fly-through = free acquisition?; active decoy-planting vs per-source lies.
+
+### #289 📰 THE GALACTIC NEWSCAST — news reads like news, not inbox spam — ✅ APPLIED 2026-07-23 (needs save-reload; E2E = sim dispatch -> read the News logbook + debuglog 'NEWSCAST')
+Ken 2026-07-23: the Messages inbox was a firehose of war dispatches / diplomatic statements / health
+advisories — "none of it is specifically for the player, it should read like news... spammy noise,
+'hi I'm here' 'hi I'm going'". Root cause: every galaxy-news desk raised comms_incoming, which the
+shared CommsIncoming cue renders via write_incoming_message = a Messages-menu entry + ping. REDESIGN
+(per-event push -> periodic anchored broadcast):
+- SILENCE: removed the comms_incoming / write_incoming_message Messages push from EVERY news lane -
+  war desk, political events (#287a), health advisories (x2), galactic-news dynamic events, and
+  diplomatic statements. KEPT only the two genuinely personal lanes that ARE addressed to the player:
+  NPC outreach (#210) and crew obituaries (#211). (DrainPlayerComms stays bridge-gated/dormant.)
+- CONSOLIDATE: ONE LLM-authored broadcast every ~15 min (Pulse_tick, every 3rd 5-min tick) reads the
+  accumulated _worldEvents spool (already fed by every lane) + a live galaxy snapshot (fresh war
+  losses, active war fronts, supply crises, tributary tensions) and writes a flowing evening-news
+  roundup to the News logbook tab: war fronts / diplomacy & politics / economy, THEN 1-2 SHORT
+  human-interest flavour items (a death, a wedding, a rare-mineral strike, a strange invention, a
+  festival) that are cosmetic ONLY (must not imply any real ship/money/territory change - conservation
+  safe). Reads like watching the evening news: some of it matters, some is just texture.
+- FOLD: the per-event #283 war-desk LLM (the repetitive "Xenon Front Crumbles x3" offender) is gone -
+  war losses now flow as facts the newscast narrates. 'sim dispatch' now forces a newscast now.
+Static gates GREEN: structural/cross-file/schema/aiscript = 0, engine-rule lint clean, touched files'
+Forge class UNCHANGED (galaxynews.xml + aic_uix.lua were already size-passthrough pre-#289 per the
+checkpoint copies; no worsening). Lua handler hand-verified (strings terminated, parens balanced) -
+in-game reload is the only Lua compile gate. PENDING: in-game E2E (reload -> sim dispatch -> confirm
+'NEWSCAST published' in debuglog + a "GNN - <headline>" entry in the News logbook and ZERO new
+Messages).
 
 ### #288-s1 🗺️ TERRITORIAL SHIFTS + ELIMINATION DETECTION — ✅ APPLIED 2026-07-23 (needs /refreshmd; E2E = first natural sector flip)
 Slice 1 of the Dynamic News gap, grounded: event_contained_sector_changed_owner space=player.galaxy

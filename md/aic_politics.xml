@@ -59,9 +59,87 @@
             <set_faction_relation_locked faction="faction.{$v}" locked="true"/>
             <set_value name="$vn" exact="faction.{$v}.knownname"/>
             <set_value name="$sn2" exact="if $s == 'player' then 'your dominion' else faction.{$s}.knownname"/>
-            <write_to_logbook category="news" title="'A New Tributary'" text="$vn + ' has entered vassalage under ' + $sn2 + '. Garrisons, tribute and uneasy loyalty follow.'"/>
-            <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|to=' + $vn + ' becomes a tributary of ' + $sn2"/>
+            <do_if value="$s == 'player'">
+              <!-- the player is a party to this pact and legitimately knows it -->
+              <write_to_logbook category="news" title="'A New Tributary'" text="$vn + ' has entered vassalage under ' + $sn2 + '.'"/>
+            </do_if>
+            <!-- #290 fog-of-war: a vassalage is a PRIVATE political arrangement (secret-terms). No public
+                 announcement; the truth is disclosed only to the two parties, their allies/informants, or an
+                 acquirer. (Open Q for Ken: allow a bare post-conquest "submitted" public outcome?) -->
+            <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|vis=secret-terms|to=|tt=' + $vn + ' has become a tributary of ' + $sn2"/>
             <debug_text text="'AIC POLITICS vassalized ' + $v + ' under ' + $s + ' (src=' + $src + ' hap=' + $hap0 + ')'" filter="general"/>
+            <signal_cue_instantly cue="On_pol_garrison" param="table[$v = $v, $s = $s]"/>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- #286a GARRISON FROM EXISTING SHIPS (engine-is-the-treasury; conservation-pure, money-free).
+         The suzerain DIVERTS military ships IT ALREADY OWNS to guard the vassal HQ. Vanilla's own
+         factionsubgoal_defendarea recipe: find_ship_by_true_owner + commandeer_object (TAKEOVER of a
+         real hull, never a spawn) + ProtectPosition. Cap keeps a home-defence floor; no spare ships
+         => the faction DECIDES to forgo. Signalled by On_pol_vassalize with table[$v, $s]. -->
+    <cue name="On_pol_garrison" instantiate="true" namespace="this">
+      <conditions>
+        <event_cue_signalled/>
+      </conditions>
+      <actions>
+        <do_if value="event.param? and event.param.$v? and event.param.$s?">
+          <set_value name="$v" exact="event.param.$v"/>
+          <set_value name="$s" exact="event.param.$s"/>
+          <do_if value="Politics.$Vassals.{'$' + $v}? and faction.{$v}?">
+            <set_value name="$E" exact="Politics.$Vassals.{'$' + $v}"/>
+            <set_value name="$sfac" exact="if $s == 'player' then faction.player else (if faction.{$s}? then faction.{$s} else null)"/>
+            <do_if value="$sfac != null">
+              <!-- the vassal's home sector: HQ first, else any station it owns -->
+              <set_value name="$gsec" exact="null"/>
+              <find_station name="$vhq" factionheadquarters="true" owner="faction.{$v}" space="player.galaxy"/>
+              <do_if value="$vhq? and $vhq != null and $vhq.sector?">
+                <set_value name="$gsec" exact="$vhq.sector"/>
+              </do_if>
+              <do_if value="$gsec == null">
+                <find_station name="$vany" owner="faction.{$v}" space="player.galaxy"/>
+                <do_if value="$vany? and $vany != null and $vany.sector?">
+                  <set_value name="$gsec" exact="$vany.sector"/>
+                </do_if>
+              </do_if>
+              <do_if value="$gsec != null">
+                <create_position name="$gpos" space="$gsec"/>
+                <!-- REAL owned spareable military ships (commandeerable = engine says it can be spared) -->
+                <find_ship_by_true_owner name="$Fleet" faction="$sfac" commandeerable="true" primarypurpose="purpose.fight" multiple="true" space="player.galaxy"/>
+                <set_value name="$fc" exact="if $Fleet? then $Fleet.count else 0"/>
+                <set_value name="$cap" exact="[($fc / 4)i, 3].min"/>
+                <do_if value="$cap ge 1">
+                  <set_value name="$E.$garrison" exact="[]"/>
+                  <do_all exact="$cap" counter="$g">
+                    <set_value name="$gship" exact="$Fleet.{$g}"/>
+                    <do_if value="$gship? and $gship.isoperational">
+                      <commandeer_object object="$gship"/>
+                      <create_order id="'ProtectPosition'" object="$gship" default="true">
+                        <param name="destination" value="[$gsec, $gpos]"/>
+                      </create_order>
+                      <append_to_list name="$E.$garrison" exact="$gship"/>
+                    </do_if>
+                  </do_all>
+                  <do_if value="$s == 'player'">
+                    <!-- the player owns this fleet - a personal record they legitimately know -->
+                    <write_to_logbook category="general" title="'Garrison Dispatched'" text="'Your warships move to guard ' + faction.{$v}.knownname + ' in ' + $gsec.knownname + '.'"/>
+                  </do_if>
+                  <do_else>
+                    <!-- #290 fog-of-war: an AI faction's fleet DEPLOYMENT is secret-strategic. NO public line;
+                         the real intel lives as tt on the ledger, disclosed only to the suzerain, its vassal,
+                         its allies/informants, or a spy who ACQUIRES it. -->
+                    <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $s + '|b=' + $v + '|vis=secret-strategic|ap=military|to=|tt=' + faction.{$s}.knownname + ' warships are deployed to guard ' + faction.{$v}.knownname + ' in ' + $gsec.knownname"/>
+                  </do_else>
+                  <debug_text text="'AIC POLITICS garrison: ' + $s + ' committed ' + $E.$garrison.count + ' of ' + $fc + ' owned fight ships to guard ' + $v + ' HQ in ' + $gsec.knownname" filter="general"/>
+                </do_if>
+                <do_else>
+                  <debug_text text="'AIC POLITICS garrison: ' + $s + ' has too few spare warships (' + $fc + ') - ' + $v + ' goes ungarrisoned (faction decides to forgo)'" filter="general"/>
+                </do_else>
+              </do_if>
+              <do_if value="$gsec == null">
+                <debug_text text="'AIC POLITICS garrison: ' + $v + ' has no home sector - no garrison'" filter="general"/>
+              </do_if>
+            </do_if>
           </do_if>
         </do_if>
       </actions>
@@ -96,6 +174,15 @@
               <write_to_logbook category="news" title="'Vassalage Dissolved'" text="faction.{$v}.knownname + ' and its suzerain have dissolved their arrangement peacefully.'"/>
               <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|to=' + faction.{$v}.knownname + ' is released from vassalage peacefully'"/>
             </do_else>
+            <do_if value="Politics.$Vassals.{'$' + $v}.$garrison?">
+              <do_all exact="Politics.$Vassals.{'$' + $v}.$garrison.count" counter="$gr">
+                <set_value name="$grs" exact="Politics.$Vassals.{'$' + $v}.$garrison.{$gr}"/>
+                <do_if value="$grs? and $grs.isoperational">
+                  <cancel_all_orders object="$grs"/>
+                </do_if>
+              </do_all>
+              <debug_text text="'AIC POLITICS garrison released for ' + $v + ' - ships revert to suzerain'" filter="general"/>
+            </do_if>
             <remove_value name="Politics.$Vassals.{'$' + $v}"/>
             <debug_text text="'AIC POLITICS released ' + $v + ' (' + $mode + ')'" filter="general"/>
           </do_if>
@@ -213,6 +300,50 @@
           <do_all exact="$Rebels.count" counter="$r">
             <signal_cue_instantly cue="On_pol_release" param="table[$v = $Rebels.{$r}, $mode = 'rebellion']"/>
           </do_all>
+          <!-- #287a: ~20% per tick, one random vassalage gets an LLM-authored political event -->
+          <set_value name="$peRoll" min="1" max="100"/>
+          <do_if value="$peRoll le 20">
+            <set_value name="$pei" min="1" max="Politics.$Vassals.keys.count"/>
+            <set_value name="$peE" exact="Politics.$Vassals.{Politics.$Vassals.keys.{$pei}}"/>
+            <set_value name="$pevid" exact="$peE.$vid"/>
+            <do_if value="faction.{$pevid}?">
+              <set_value name="$pemm" exact="if $peE.$s != 'player' and faction.{$pevid}.primaryrace? and faction.{$peE.$s}? and faction.{$peE.$s}.primaryrace? and faction.{$pevid}.primaryrace != faction.{$peE.$s}.primaryrace then 1 else 0"/>
+              <set_value name="$pesn" exact="if $peE.$s == 'player' then 'the player' else (if faction.{$peE.$s}? then faction.{$peE.$s}.knownname else $peE.$s)"/>
+              <raise_lua_event name="'AIChat.pol_event'" param="'v=' + $pevid + '|vn=' + faction.{$pevid}.knownname + '|s=' + $peE.$s + '|sn=' + $pesn + '|hap=' + ($peE.$hap)i + '|trib=' + $peE.$trib + '|mm=' + $pemm"/>
+              <debug_text text="'AIC POLITICS event-seek for ' + $pevid + ' under ' + $peE.$s + ' (hap=' + ($peE.$hap)i + ')'" filter="general"/>
+            </do_if>
+          </do_if>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- #287a: apply the LLM's loyalty swing from a political event -->
+    <cue name="On_pol_happy_delta" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'pol_happy_delta'"/>
+      </conditions>
+      <actions>
+        <do_if value="event.param3? and event.param3.$v? and Politics.$Vassals.{'$' + event.param3.$v}?">
+          <set_value name="$dd" exact="if event.param3.$delta? then event.param3.$delta else 0"/>
+          <set_value name="Politics.$Vassals.{'$' + event.param3.$v}.$hap" exact="[[Politics.$Vassals.{'$' + event.param3.$v}.$hap + $dd, 0].max, 100].min"/>
+          <debug_text text="'AIC POLITICS event delta ' + $dd + ' -> ' + event.param3.$v + ' hap=' + Politics.$Vassals.{'$' + event.param3.$v}.$hap" filter="general"/>
+        </do_if>
+      </actions>
+    </cue>
+    <!-- #287a: 'sim polevent' forces a political event for the first vassal (testing) -->
+    <cue name="On_pol_event_force" instantiate="true" namespace="this">
+      <conditions>
+        <event_ui_triggered screen="'ai_influence'" control="'pol_event_force'"/>
+      </conditions>
+      <actions>
+        <do_if value="Politics.$Vassals? and Politics.$Vassals.keys.count gt 0">
+          <set_value name="$peE" exact="Politics.$Vassals.{Politics.$Vassals.keys.{1}}"/>
+            <set_value name="$pevid" exact="$peE.$vid"/>
+            <do_if value="faction.{$pevid}?">
+              <set_value name="$pemm" exact="if $peE.$s != 'player' and faction.{$pevid}.primaryrace? and faction.{$peE.$s}? and faction.{$peE.$s}.primaryrace? and faction.{$pevid}.primaryrace != faction.{$peE.$s}.primaryrace then 1 else 0"/>
+              <set_value name="$pesn" exact="if $peE.$s == 'player' then 'the player' else (if faction.{$peE.$s}? then faction.{$peE.$s}.knownname else $peE.$s)"/>
+              <raise_lua_event name="'AIChat.pol_event'" param="'v=' + $pevid + '|vn=' + faction.{$pevid}.knownname + '|s=' + $peE.$s + '|sn=' + $pesn + '|hap=' + ($peE.$hap)i + '|trib=' + $peE.$trib + '|mm=' + $pemm"/>
+              <debug_text text="'AIC POLITICS event-seek for ' + $pevid + ' under ' + $peE.$s + ' (hap=' + ($peE.$hap)i + ')'" filter="general"/>
+            </do_if>
         </do_if>
       </actions>
     </cue>

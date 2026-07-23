@@ -440,6 +440,9 @@ function menu.onInput(text)
                     else
                         note = "[sim vassalize <vassal-id> <suzerain-id|player>]"
                     end
+                elseif arg == "polevent" then
+                    if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "pol_event_force", {}) end) end
+                    note = "[sim: forcing a political event for the first vassalage - watch logbook/debuglog for 'POLEVENT']"
                 elseif arg == "poltick" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "pol_tick", {}) end) end
                     note = "[sim: forcing a politics happiness tick - watch debuglog for 'AIC POLITICS eval']"
@@ -453,7 +456,7 @@ function menu.onInput(text)
                     end
                 elseif arg == "dispatch" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "wardesk_force", {}) end) end
-                    note = "[sim: forcing a war-desk dispatch from accumulated losses - watch logbook/debuglog for 'WARDESK']"
+                    note = "[sim: forcing a GNN newscast now - watch the News logbook / debuglog for 'NEWSCAST']"
                 elseif arg == "spread" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "plague_spread_force", {}) end) end
                     note = "[sim: forcing a plague spread roll - watch debuglog for 'AIC PLAGUE spread']"
