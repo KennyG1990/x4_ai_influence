@@ -378,7 +378,7 @@ function menu.onInput(text)
         if amt and amt > 0 then
             if AddUITriggeredEvent then
                 pcall(function() AddUITriggeredEvent("ai_influence", "aic_transfer", {
-                    credits = math.floor(amt), asked = pending.credits, why = pending.why, deliverable = pending.deliverable }) end)
+                    credits = math.floor(amt), asked = pending.credits, why = pending.why, deliverable = pending.deliverable, vfaction = pending.vfaction }) end)
             end
             table.insert(menu.history, { role = "assistant", text = "[You transfer " .. math.floor(amt) .. " Cr (they asked " .. tostring(pending.credits) .. ").]", err = true })
         else
@@ -394,7 +394,7 @@ function menu.onInput(text)
             menu._pendingAction = nil
             if AddUITriggeredEvent then
                 pcall(function() AddUITriggeredEvent("ai_influence", "aic_transfer", {
-                    credits = pending.credits, asked = pending.credits, why = pending.why, deliverable = pending.deliverable }) end)
+                    credits = pending.credits, asked = pending.credits, why = pending.why, deliverable = pending.deliverable, vfaction = pending.vfaction }) end)
             end
             menu.history = menu.history or {}
             table.insert(menu.history, { role = "assistant", text = "[You pay the full " .. tostring(pending.credits) .. " Cr.]", err = true })
@@ -440,6 +440,9 @@ function menu.onInput(text)
                     else
                         note = "[sim vassalize <vassal-id> <suzerain-id|player>]"
                     end
+                elseif arg == "poltick" then
+                    if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "pol_tick", {}) end) end
+                    note = "[sim: forcing a politics happiness tick - watch debuglog for 'AIC POLITICS eval']"
                 elseif arg:sub(1, 8) == "polhappy" then
                     local pv, pn = arg:match("^polhappy%s+(%a+)%s+(%d+)$")
                     if pv and pn and AddUITriggeredEvent then

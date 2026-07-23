@@ -1209,6 +1209,20 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
             .. " credits on their own. If a payment has been agreed but no [Transfer complete] note has"
             .. " appeared yet, you MUST include the transfer field (again if needed) to open the payment"
             .. " window; waiting without it means the money can never arrive."
+        -- #285 slice 2b: the vassalage broker - only civilized-faction reps may entertain it
+        do
+            local CIV_FAC = { argon = true, antigone = true, teladi = true, ministry = true, paranid = true, holyorder = true, split = true, freesplit = true, boron = true, terran = true, pioneers = true, hatikvah = true, scaleplate = true, buccaneers = true }
+            if CIV_FAC[tostring(ctx.faction or "")] then
+                sys = sys .. " VASSALAGE BROKER: this player may seek to make YOUR faction their TRIBUTARY -"
+                    .. " your people paying them tribute in exchange for their protection and patronage. This is a"
+                    .. " MONUMENTAL step, near-treason to the proud. ONLY if the player SERIOUSLY proposes it AND"
+                    .. " you find it credible given your standing with them and your faction's fortunes, include"
+                    .. ' "vassalage":{"cost":<50000000 to 2000000000 credits - far higher if they are barely'
+                    .. ' trusted or your faction is strong and proud>,"reason":"<why your faction would stoop to'
+                    .. ' this>"} in the JSON. A secure, proud faction REFUSES outright - omit the field and say so.'
+                    .. " Never offer this lightly; it is the sale of your people's independence."
+            end
+        end
         sys = sys .. ' ROLEPLAY ITEMS: when the story warrants physically handing the player something -'
             .. ' a letter, data chip, dossier, signed contract or keepsake - include'
             .. ' "give_item":{"kind":"letter|data_chip|dossier|contract|keepsake","title":"<up to 8 words>",'
@@ -1550,6 +1564,29 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                         end
                         log("transfer proposed amt=" .. amt .. " why=" .. why)
                         end
+                    end
+                end
+                -- #285 slice 2b: vassalage broker - a faction rep sells their people's tribute.
+                -- Gated by the D&D layer (a monumental ask); the cost rides the SAME payment lane
+                -- (large-sum path), so lowballing insults them (#272) and the pact forms only on
+                -- full payment (the 'vassalage' deliverable, fulfilled MD-side).
+                local okv, objv = pcall(json.decode, raw)
+                local vas = (okv and type(objv) == "table" and type(objv.vassalage) == "table") and objv.vassalage or nil
+                if vas and not dndBlocked then
+                    local CIV_FAC = { argon = true, antigone = true, teladi = true, ministry = true, paranid = true, holyorder = true, split = true, freesplit = true, boron = true, terran = true, pioneers = true, hatikvah = true, scaleplate = true, buccaneers = true }
+                    local vfac = tostring(ctx.faction or "")
+                    local vcost = math.floor(tonumber(vas.cost) or 0)
+                    if CIV_FAC[vfac] and vcost >= 10000000 then
+                        vcost = math.max(50000000, math.min(2000000000, vcost))
+                        local vwhy = "a vassalage tribute-pact"
+                        AI_Influence._pendingTransfer = { token = token, amt = vcost, asked = vcost, why = vwhy, target = tostring(ctx.target), deliverable = "vassalage", vfaction = vfac }
+                        local tmv = rawget(_G, "X4_Terminal_Menu")
+                        if tmv and tostring(tmv.currentContext and tmv.currentContext.target) == tostring(ctx.target) then
+                            tmv._pendingAction = { control = "aic_transfer", credits = vcost, why = vwhy, deliverable = "vassalage", vfaction = vfac }
+                            tmv.history = tmv.history or {}
+                            table.insert(tmv.history, { role = "assistant", text = "[Vassalage offered: " .. vfac .. " will become your tributary for " .. vcost .. " Cr. Pay in full to seal it.]", err = true })
+                        end
+                        log("vassalage brokered faction=" .. vfac .. " cost=" .. vcost)
                     end
                 end
             end

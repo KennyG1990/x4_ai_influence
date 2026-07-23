@@ -7,7 +7,7 @@
        tribute via reward_player; fork-tuned happiness numbers. Registry lives here in MD
        blackboard (save-persisted); Lua narrates via the existing ledger/war-desk lanes. -->
   <cues>
-    <cue name="Politics" namespace="this">
+    <cue name="Politics" instantiate="true" namespace="this">
       <conditions>
         <check_any>
           <event_game_started/>
@@ -133,10 +133,22 @@
         </do_if>
       </actions>
     </cue>
-    <!-- HAPPINESS TICK: 5min cadence (fork number). Drains, tribute payouts, rebellion rolls.
-         Releases collected during iteration, processed after (no mutation mid-loop). -->
+    <!-- HAPPINESS: a thin 5-min timer that signals Pol_eval; the evaluation itself lives in
+         Pol_eval so 'sim poltick' can force it instantly (same code path, no duplication). -->
     <cue name="Pol_tick" namespace="this">
       <delay exact="5min"/>
+      <actions>
+        <signal_cue_instantly cue="Pol_eval"/>
+        <reset_cue cue="Pol_tick"/>
+      </actions>
+    </cue>
+    <cue name="Pol_eval" instantiate="true" namespace="this">
+      <conditions>
+        <check_any>
+          <event_cue_signalled/>
+          <event_ui_triggered screen="'ai_influence'" control="'pol_tick'"/>
+        </check_any>
+      </conditions>
       <actions>
         <do_if value="not Politics.$Vassals?">
           <set_value name="Politics.$Vassals" exact="table[]"/>
@@ -151,19 +163,41 @@
             <set_value name="$E" exact="Politics.$Vassals.{$vk}"/>
             <set_value name="$vid" exact="$E.$vid"/>
             <do_if value="faction.{$vid}?">
-              <!-- tribute drain: (pct - 3) * 0.75 per tick (fork-tuned) -->
-              <set_value name="$drain" exact="(($E.$trib - 3) * 75) / 100"/>
+              <set_value name="$hap0" exact="$E.$hap"/>
+              <!-- (a) tribute drain: (pct - 3) * 0.75 per tick (fork-tuned), floor 0 -->
+              <set_value name="$drain" exact="($E.$trib - 3) * 0.75"/>
               <do_if value="$drain lt 0">
                 <set_value name="$drain" exact="0"/>
               </do_if>
-              <set_value name="$E.$hap" exact="[[$E.$hap - $drain, 0].max, 100].min"/>
-              <!-- player-suzerain tribute: REAL credits, capped 5M/tick (fork cap) -->
+              <set_value name="$E.$hap" exact="$E.$hap - $drain"/>
+              <!-- (b) cultural mismatch: AI suzerains only; cross-race pairing drifts hostile -1/tick.
+                   Uses the GAME's own faction.primaryrace so splinter factions (same race) hold. -->
+              <set_value name="$mm" exact="0"/>
+              <do_if value="$E.$s != 'player' and faction.{$vid}.primaryrace? and faction.{$E.$s}.primaryrace?">
+                <do_if value="faction.{$vid}.primaryrace != faction.{$E.$s}.primaryrace">
+                  <set_value name="$mm" exact="1"/>
+                  <set_value name="$E.$hap" exact="$E.$hap - 1"/>
+                </do_if>
+              </do_if>
+              <!-- (c) AI auto-gift: an AI suzerain stabilises an unhappy vassal (+5), but ONLY if it
+                   still holds stations - a smashed suzerain can't keep buying off rebellion (Worth gate) -->
+              <set_value name="$gift" exact="0"/>
+              <do_if value="$E.$s != 'player' and $E.$hap lt 40">
+                <find_station name="$SuzSta" owner="faction.{$E.$s}" space="player.galaxy"/>
+                <do_if value="$SuzSta? and $SuzSta != null">
+                  <set_value name="$gift" exact="5"/>
+                  <set_value name="$E.$hap" exact="$E.$hap + 5"/>
+                </do_if>
+              </do_if>
+              <set_value name="$E.$hap" exact="[[$E.$hap, 0].max, 100].min"/>
+              <!-- (d) player-suzerain tribute: REAL credits, capped 5M/tick (fork cap) -->
               <do_if value="$E.$s == 'player'">
                 <set_value name="$tribCr" exact="[($E.$trib * 1000000), 5000000].min"/>
                 <reward_player money="$tribCr * 1Cr"/>
                 <debug_text text="'AIC POLITICS tribute ' + $tribCr + ' Cr from ' + $vid + ' to the player'" filter="general"/>
               </do_if>
-              <!-- rebellion roll below 30, outside the grace window -->
+              <debug_text text="'AIC POLITICS eval ' + $vid + ' under ' + $E.$s + ': hap ' + $hap0 + ' -> ' + $E.$hap + ' (drain=' + $drain + ' mismatch=' + $mm + ' gift=' + $gift + ')'" filter="general"/>
+              <!-- (e) rebellion roll below 30, outside the grace window -->
               <do_if value="$E.$hap lt 30 and player.age gt $E.$grace">
                 <set_value name="$rroll" min="1" max="100"/>
                 <set_value name="$rchance" exact="(30 - $E.$hap)i * 3"/>
@@ -180,7 +214,6 @@
             <signal_cue_instantly cue="On_pol_release" param="table[$v = $Rebels.{$r}, $mode = 'rebellion']"/>
           </do_all>
         </do_if>
-        <reset_cue cue="Pol_tick"/>
       </actions>
     </cue>
     <!-- sim/adjust lane: pol_happy {v, n} sets happiness directly (testing + slice-2 events) -->

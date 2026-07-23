@@ -1,3 +1,50 @@
+### #285c 🤝👑 CONVERSATIONAL VASSALAGE BROKER — buy a faction as your tributary through dialogue — ✅ VERIFIED IN-GAME 2026-07-23 (bridge proven; conversational pitch = natural play)
+Slice 2b, the flagship LLM-decides feature - the fork's broker MENU becomes a NEGOTIATION. A
+civilized-faction rep may OFFER to make their people the player's tributary: the LLM decides
+credibility AND cost (50M-2G, higher when barely trusted or the faction is proud) via a
+"vassalage":{cost,reason} field; a secure faction refuses outright. Gated by the D&D layer (not
+while a check is failing - a monumental ask). The cost rides the VERIFIED #270 payment lane on a
+new large-sum path (>500K, separate from the conversation-payment cap), so the player can LOWBALL
+and INSULT the faction (#272 consequences fire) - and the pact forms ONLY on full payment (the
+'vassalage' deliverable, gated exactly like the dossier). On full payment On_transfer signals the
+verified On_pol_vassalize gate with s='player' src='broker' -> the faction becomes the player's
+tributary, tribute flows to the player wallet each tick (5M cap). Conservation: only real credits
+move, wallet-checked; the pact is withheld unless paid in full. vfaction threaded id-string through
+the payment lane (dodges the faction-object->id stringify gotcha). Files: aic_uix.lua (contract +
+parse + gate), aic_menu.lua (carry vfaction), ai_influence_chat.xml (On_transfer bridge).
+VERIFIED IN-GAME (zero-UI probe, stripped): dispatched a vassalage payment -> "AIC TRANSFER paid
+1000 Cr" -> "vassalized teladi under player (src=broker)" -> "BROKER vassalage formed" -> forced tick
+-> "tribute 5000000 Cr from teladi to the player" + "eval teladi under player: 60 -> 58.5
+(drain=1.5 mismatch=0 gift=0)". The player-suzerain path works completely: pay -> become suzerain ->
+receive REAL 5M/tick tribute; correctly no cultural mismatch (player raceless) and no auto-gift
+(AI-only). 0 error signatures. Capacity: ai_influence_chat.xml EDITABLE; the two Lua files sit at
+their pre-existing partial/passthrough baseline (Forge Lua-parser + file-size gaps, unchanged - not
+worsened). CONVERSATIONAL PITCH (real LLM broker offer through dialogue) = natural-play verify; the
+contract + parse + D&D gate are static-validated.
+
+### #285b 🏛️ VASSAL HAPPINESS DEPTH + AI AUTO-GIFT — ✅ VERIFIED IN-GAME 2026-07-23 (Forge-EDITABLE)
+Slice 2a of the politics arc. Refactored the 5-min tick into a thin timer + a signalled Pol_eval
+(so 'sim poltick' forces one evaluation instantly - same code path). New characterful factors from
+the fork's tuned table: (b) CULTURAL MISMATCH - AI suzerains only, cross-race vassalage drifts
+hostile -1/tick; splinter factions share a race (argon/antigone/hatikvah/buccaneers, teladi/ministry,
+paranid/holyorder, split/freesplit/scaleplate, terran/pioneers) so same-culture vassalages hold,
+Teladi-over-Split-type pairings sour. (c) AI AUTO-GIFT - an AI suzerain lifts an unhappy vassal
+(<40) by +5, but ONLY while it still holds stations (cheap Worth proxy via find_station) - a smashed
+suzerain genuinely can't keep buying off rebellion, so conquered empires shed vassals as they lose.
+Per-vassal delta breakdown logged ("eval X under Y: hap A -> B (drain= mismatch= gift=)"). Player
+tribute (real 5M-capped Cr) + rebellion roll unchanged. Editable-standard MD. Sim: 'sim poltick'.
+VERIFIED IN-GAME (zero-UI probe, stripped): forced two vassalages @hap38, one forced Pol_eval ->
+"eval antigone (Argon) under argon (Argon): 38 -> 41.5 (drain=1.5 mismatch=0 gift=5)" and
+"eval split (Split) under argon (Argon): 38 -> 40.5 (drain=1.5 mismatch=1 gift=5)" - cross-race
+sours, same-race holds, float drain + auto-gift + clamp all exact, 0 errors. Cultural mismatch uses
+the GAME'S OWN faction.primaryrace (caught my hardcoded map's error: Scale Plate Pact is Teladi race,
+not Split). Capacity: md/aic_politics.xml EDITABLE. TWO MORE X4 GOTCHAS BANKED (memory): (5) a
+non-instantiate holder cue (game_started/game_loaded, no instantiate=true) fires ONCE and does NOT
+re-run on save-reload - so NEW setup code added after a save was made never runs until the holder is
+instantiate=true; (6) a cue receiving repeated signal_cue_instantly must be instantiate=true or it
+errors "no corresponding listeners"; and integer division truncates (use *0.75 not *75/100).
+DEFERRED refinement: vassal-too-strong penalty (needs threatscore military summation).
+
 ### #285 👑 VASSALAGE CORE — slice 1 — ✅ VERIFIED IN-GAME 2026-07-23 (DU disabled; Forge-EDITABLE)
 New file md/aic_politics.xml owns the registry: Politics.$Vassals entries {v, s, hap, trib, day0,
 src, grace}. ACCEPTANCE CRITERIA:

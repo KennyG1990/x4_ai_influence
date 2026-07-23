@@ -174,6 +174,30 @@
             <debug_text text="'AIC TRANSFER rejected (insufficient funds) amt=' + $amt" filter="general"/>
           </do_else>
         </do_if>
+        <!-- #285 slice 2b: vassalage broker payment - large sums (50M-2G), separate from the
+             500K conversation-payment cap. Same wallet check (nothing minted); on FULL payment the
+             pact forms with the player as suzerain (reuses the verified On_pol_vassalize gate). -->
+        <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'vassalage' and $amt gt 500000">
+          <do_if value="player.money ge ((1Cr) * $amt)">
+            <reward_player money="-((1Cr) * $amt)"/>
+            <show_notification text="'Tribute-pact payment: ' + $amt + ' Cr'"/>
+            <raise_lua_event name="'AIChat.transfer_done'" param="$amt"/>
+            <set_value name="$paid" exact="true"/>
+            <debug_text text="'AIC TRANSFER (vassalage) paid ' + $amt + ' Cr'" filter="general"/>
+          </do_if>
+          <do_else>
+            <raise_lua_event name="'AIChat.transfer_failed'"/>
+            <debug_text text="'AIC TRANSFER (vassalage) rejected (insufficient funds) amt=' + $amt" filter="general"/>
+          </do_else>
+        </do_if>
+        <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'vassalage' and $paid and $amt ge $askedv and event.param3.$vfaction?">
+          <set_value name="$vf" exact="event.param3.$vfaction"/>
+          <do_if value="$vf != '' and faction.{$vf}?">
+            <signal_cue_instantly cue="md.aic_politics.On_pol_vassalize" param="table[$v = $vf, $s = 'player', $src = 'broker']"/>
+            <write_to_logbook category="news" title="'A Tributary Bought'" text="faction.{$vf}.knownname + ' has accepted vassalage under your banner in exchange for tribute and protection.'"/>
+            <debug_text text="'AIC BROKER vassalage formed: ' + $vf + ' under player'" filter="general"/>
+          </do_if>
+        </do_if>
         <!-- #252: production favor - the manager's station gains REAL stock (add_cargo, the
              DeadAir Fill-engine actuation). The player buys it at the terminal like any stock. -->
         <do_if value="event.param3.$deliverable? and event.param3.$deliverable == 'production_priority' and (($paid and $amt ge $askedv) or $amt == 0)">
