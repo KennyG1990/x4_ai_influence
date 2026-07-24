@@ -66,7 +66,7 @@
             <!-- #290 fog-of-war: a vassalage is a PRIVATE political arrangement (secret-terms). No public
                  announcement; the truth is disclosed only to the two parties, their allies/informants, or an
                  acquirer. (Open Q for Ken: allow a bare post-conquest "submitted" public outcome?) -->
-            <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|vis=secret-terms|to=|tt=' + $vn + ' has become a tributary of ' + $sn2"/>
+            <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $v + '|b=' + $s + '|vis=secret-terms|ap=political|to=|tt=' + $vn + ' has become a tributary of ' + $sn2"/>
             <debug_text text="'AIC POLITICS vassalized ' + $v + ' under ' + $s + ' (src=' + $src + ' hap=' + $hap0 + ')'" filter="general"/>
             <signal_cue_instantly cue="On_pol_garrison" param="table[$v = $v, $s = $s]"/>
           </do_if>

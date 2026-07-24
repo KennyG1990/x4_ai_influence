@@ -346,7 +346,7 @@
                         <set_value name="Galaxy_pulse.$Snap.{'$w_' + $fa + '_' + $fb}" exact="table[$payer = $payer, $payee = $payee, $left = 3]"/>
                         <!-- #290 fog-of-war: reparation TERMS are secret-terms (private settlement + a
                              strength leak of who is weaker). No public line; belligerents + acquirers only. -->
-                        <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $payer + '|b=' + $payee + '|vis=secret-terms|to=|tt=' + faction.{$payer}.knownname + ' agreed to pay 900,000 Cr in war reparations to ' + faction.{$payee}.knownname + ' under the ceasefire terms'"/>
+                        <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $payer + '|b=' + $payee + '|vis=secret-terms|ap=political|to=|tt=' + faction.{$payer}.knownname + ' agreed to pay 900,000 Cr in war reparations to ' + faction.{$payee}.knownname + ' under the ceasefire terms'"/>
                         <debug_text text="'AIC reparation minted ' + $payer + ' -> ' + $payee + ' (stations ' + $cntA + '/' + $cntB + ')'" filter="general"/>
                       </do_if>
                       <do_else>

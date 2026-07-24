@@ -182,6 +182,26 @@ appears in the newscast or an uninvolved NPC's knowledge; public war/econ/territ
 s2 + Ken's forks: the acquisition layer (B*), rebellion suzerain-scrub, whether vassalage shows a bare
 public outcome.
 
+### #290 S1-S3 🧠 KNOWLEDGE MODEL — who knows what, and knowing != sharing — ✅ BUILT + LOGIC-PROVEN 2026-07-23 (needs save-reload; E2E = sim accesstest / real conversation AIC ACCESS log)
+The espionage knowledge model, built additively on the #290 ledger. S0-remainder: stable content-derived
+secret ids (e.sid) + participant tags. S1 (inputs): MD resolves the NPC's REAL faction id (walk-known-ids;
+the live path only had the display name, which never matched ledger ids -> insider truth was dormant), and
+SendDirectChat computes an ACCESS PROFILE from role + combinedskill seniority (manager=economic, captain=
+military, marine/crew=low; seniority>=12 widens to +political & high tier). Threaded into the WorldEventLines
+viewer additively (behaviour unchanged until S2). S2+S3: a NEW InsiderSecrets(evts,viewer) returns the insider
+tt an NPC is eligible to KNOW - gated by involvement (faction_id==e.a/e.b) + domain (e.ap: military/economic/
+political, tagged on every secret) + seniority tier (secret-strategic=HIGH, secret-terms=MED+) + participation
+(e.sid in viewer.participated grants regardless). Surfaced UNDER a DISCLOSURE RULE (Ken decision 1: knowing is
+NOT sharing - the LLM decides by loyalty/trust to reveal/deflect/charge/lie, never auto-dumps). Only manager/
+captain/crew are walk-up targets, so top-tier secrets (war plans) have NO casual holder - they need an embedded
+sleeper or informant (embed-and-rise). Static gates GREEN. LOGIC PROVEN offline (7/7 cases: janitor=0, mid
+captain=0, senior captain=garrison+vassalage, mid manager=trade, both pact parties know it, involvement
+required). Dev harness: 'sim accesstest' logs the full matrix to debuglog. PENDING in-game: reload -> sim
+accesstest (Lua-compiles) + a real conversation (AIC ACCESS log shows a resolved faction_id/role/skill = the
+S1 plumbing works). Fails SAFE if plumbing has a gap (no faction_id -> no secrets shared -> no leak). NEXT:
+S4 paid/coerced acquisition (bribe/threaten -> dossier) -> S5 insert-own-agent -> S6 decay+brokering -> S7 AI
+symmetry -> the faction strategic-director capstone.
+
 ### #290-s1b 🔒 FOG SURVIVES RELOAD + the espionage BUILD PLAN locked — ✅ APPLIED 2026-07-23
 A 4-agent spec workflow (vs the real code + Ken's 4 locked decisions) caught a CRITICAL bug in #290-s1:
 HydrateWorldEvents (aic_uix.lua:886) re-added in-memory events with only {i,ap,tt}, DROPPING e.vis - so a

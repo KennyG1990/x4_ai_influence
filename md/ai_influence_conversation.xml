@@ -17,6 +17,16 @@
         <set_value name="md.ai_influence_conversation.State.$current_npc" exact="event.object"/>
         <raise_lua_event name="'AIChat.npc_skills'" param="event.object"/>
         <set_value name="md.ai_influence_conversation.State.$facname" exact="if event.object.owner? then event.object.owner.knownname else 'argon'"/>
+        <!-- #290 S1: resolve the REAL faction id ($facname is a display name, not resolvable). The
+             espionage access model keys secrets on ids, so walk the known-id list (On_sector_flip pattern). -->
+        <set_value name="md.ai_influence_conversation.State.$facid" exact="''"/>
+        <do_if value="event.object.owner?">
+          <do_for_each name="$fchk" in="['argon','antigone','teladi','ministry','paranid','holyorder','split','freesplit','boron','terran','pioneers','hatikvah','scaleplate','buccaneers','xenon','khaak']">
+            <do_if value="md.ai_influence_conversation.State.$facid == '' and faction.{$fchk}? and event.object.owner == faction.{$fchk}">
+              <set_value name="md.ai_influence_conversation.State.$facid" exact="$fchk"/>
+            </do_if>
+          </do_for_each>
+        </do_if>
         <set_value name="md.ai_influence_conversation.State.$npcname" exact="if event.object.knownname? then event.object.knownname else 'Officer'"/>
         <set_value name="md.ai_influence_conversation.State.$skill" exact="if event.object.combinedskill? then event.object.combinedskill else 0"/>
         <set_value name="md.ai_influence_conversation.State.$role" exact="'crew'"/>

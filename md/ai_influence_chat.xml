@@ -109,7 +109,7 @@
         <find_ship_by_true_owner groupname="$PFleet" faction="faction.player" space="player.sector" primarypurpose="purpose.fight" checkoperational="true" multiple="true"/>
         <set_value name="$pfleet" exact="if $PFleet? then $PFleet.count else 0"/>
         <debug_text text="'AIC grounding traffic=' + $traffic + ' sector=' + $psector + ' owned=' + $owned + ' pmoney=' + $pmoney + ' pfleet=' + $pfleet" filter="general"/>
-        <raise_lua_event name="'AIChat.open'" param="'faction_id=' + $faction + '|target_name=' + $target + '|save_id=' + $sid + '|npc_role=' + $nrole + '|npc_skill=' + $nskill + '|npc_ship=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.knownname? then md.ai_influence_conversation.State.$current_npc.ship.knownname else '') + '|npc_fleet=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.commander? and md.ai_influence_conversation.State.$current_npc.ship.commander.knownname? then md.ai_influence_conversation.State.$current_npc.ship.commander.knownname else '') + '|initial=' + $initial + '|standing=' + $standing + '|psector=' + $psector + '|nearby=' + $nearby + '|traffic=' + $traffic + '|npc_owned=' + $owned + '|pmoney=' + $pmoney + '|pfleet=' + $pfleet"/>
+        <raise_lua_event name="'AIChat.open'" param="'faction_id=' + $faction + '|target_name=' + $target + '|save_id=' + $sid + '|npc_role=' + $nrole + '|npc_skill=' + $nskill + '|npc_ship=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.knownname? then md.ai_influence_conversation.State.$current_npc.ship.knownname else '') + '|npc_fleet=' + (if md.ai_influence_conversation.State.$current_npc? and md.ai_influence_conversation.State.$current_npc.ship? and md.ai_influence_conversation.State.$current_npc.ship.commander? and md.ai_influence_conversation.State.$current_npc.ship.commander.knownname? then md.ai_influence_conversation.State.$current_npc.ship.commander.knownname else '') + '|initial=' + $initial + '|standing=' + $standing + '|psector=' + $psector + '|nearby=' + $nearby + '|traffic=' + $traffic + '|npc_owned=' + $owned + '|pmoney=' + $pmoney + '|pfleet=' + $pfleet + '|real_facid=' + (if md.ai_influence_conversation.State.$facid? then md.ai_influence_conversation.State.$facid else '')"/>
       </actions>
     </library>
     <cue name="Chat_boot" namespace="this">
@@ -666,7 +666,7 @@
               <set_value name="$curAB" exact="faction.{$tp.$b}.relationto.{faction.{$tp.$a}}"/>
               <set_faction_relation faction="faction.{$tp.$b}" otherfaction="faction.{$tp.$a}" value="[($curAB + 0.01), 1.0].min"/>
               <set_faction_relation faction="faction.{$tp.$a}" otherfaction="faction.{$tp.$b}" value="[($curAB + 0.01), 1.0].min"/>
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $tp.$a + '|b=' + $tp.$b + '|vis=secret-terms|to=|tt=' + faction.{$tp.$b}.knownname + ' completed its ' + @$tp.$w.name + ' supply pact with ' + faction.{$tp.$a}.knownname"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $tp.$a + '|b=' + $tp.$b + '|vis=secret-terms|ap=economic|to=|tt=' + faction.{$tp.$b}.knownname + ' completed its ' + @$tp.$w.name + ' supply pact with ' + faction.{$tp.$a}.knownname"/>
               <set_value name="TradeCouncil.$Pact" exact="table[]"/>
               <debug_text text="'AIC TRADE pact FULFILLED ' + $tp.$a + ' + ' + $tp.$b" filter="general"/>
             </do_if>
@@ -760,13 +760,13 @@
             <do_if value="event.param3.$deceive? and event.param3.$deceive and event.param3.$false_statement?">
               <!-- #290: the false announcement is no longer BROADCAST to News; it propagates as
                    outsider-facing intel via conversations/spies (to=lie) while insiders know the truth (tt). -->
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|to=' + event.param3.$false_statement + '|tt=' + $truth"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|ap=economic|to=' + event.param3.$false_statement + '|tt=' + $truth"/>
               <debug_text text="'AIC TRADE pact signed with DECEPTIVE announcement (' + $pd.$a + '/' + $pd.$b + ')'" filter="general"/>
             </do_if>
             <do_else>
               <!-- #290 fog-of-war: a private commercial pact - no public News line; terms known only to
                    the signatories (tt) and acquirers. -->
-              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|to=|tt=' + $truth"/>
+              <raise_lua_event name="'AIChat.world_event'" param="'kind=pact|a=' + $pd.$a + '|b=' + $pd.$b + '|vis=secret-terms|ap=economic|to=|tt=' + $truth"/>
             </do_else>
             <debug_text text="'AIC TRADE pact SIGNED ' + $pd.$b + ' -> ' + $pd.$a + ': ' + $qty + ' x ' + @$pd.$w"/>
           </do_if>

@@ -457,6 +457,10 @@ function menu.onInput(text)
                 elseif arg == "dispatch" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "wardesk_force", {}) end) end
                     note = "[sim: forcing a GNN newscast now - watch the News logbook / debuglog for 'NEWSCAST']"
+                elseif arg == "accesstest" then
+                    local b = rawget(_G, "AI_Influence")
+                    if b and b.AccessSelfTest then b.AccessSelfTest() end
+                    note = "[sim: espionage access-model self-test - watch debuglog for 'ACCESSTEST' lines]"
                 elseif arg == "spread" then
                     if AddUITriggeredEvent then pcall(function() AddUITriggeredEvent("ai_influence", "plague_spread_force", {}) end) end
                     note = "[sim: forcing a plague spread roll - watch debuglog for 'AIC PLAGUE spread']"
@@ -607,6 +611,8 @@ function menu.onInput(text)
         bridge.SendDirectChat({
             target = menu.currentContext.target,
             faction = menu.currentContext.faction,
+            faction_id = fc.real_facid,   -- #290 S1: resolved faction id (display name won't match ledger ids)
+            skill = fc.npc_skill,          -- #290 S1: combinedskill = seniority, widens intel access domain
             role = fc.npc_role or fc.role or "officer",
             standing = fc.standing,   -- P3-a grounded context from MD
             psector = fc.psector,

@@ -829,6 +829,16 @@ function AI_Influence.AddWorldEvent(evts, kind, a, b, to, day, extra)
         if extra.ap ~= nil then e.ap = tostring(extra.ap) end
         if extra.tt ~= nil and extra.tt ~= "" then e.tt = tostring(extra.tt) end   -- #269: insider truth
         if extra.vis ~= nil and extra.vis ~= "" then e.vis = tostring(extra.vis) end  -- #290: visibility (public|secret-strategic|secret-terms)
+        if extra.part ~= nil and extra.part ~= "" then e.part = tostring(extra.part) end  -- #290 B1: participant tokens (comma-sep) -> participation-grant
+        if extra.sid ~= nil and extra.sid ~= "" then e.sid = tostring(extra.sid) end  -- #290 B1: preserved across reload
+    end
+    -- #290 B1: mint a STABLE secret id for secret-bearing events (deterministic from content, so the SAME
+    -- secret keeps its id across reload - the holding-roll, acquisition, decay and brokering all key on it)
+    if e.sid == nil and (e.vis == "secret-strategic" or e.vis == "secret-terms" or e.k == "pact" or tostring(e.k):sub(1, 4) == "dyn_") then
+        local base = e.k .. "|" .. e.a .. "|" .. e.b .. "|" .. tostring(e.d) .. "|" .. tostring(e.tt or e.to or "")
+        local h = 5381
+        for i = 1, #base do h = (h * 33 + base:byte(i)) % 4294967296 end
+        e.sid = e.k .. "|" .. e.a .. "|" .. e.b .. "|" .. tostring(e.d) .. "|" .. tostring(h % 100000)
     end
     evts[#evts + 1] = e
     while #evts > WORLDEV_CAP do table.remove(evts, 1) end
@@ -883,14 +893,14 @@ function AI_Influence.HydrateWorldEvents()
     AI_Influence.LoadCard(WORLDEV_TOKEN, function(card)
         local stored = (type(card) == "table" and type(card.evts) == "table") and card.evts or {}
         local mem = AI_Influence._worldEvents or {}
-        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap, tt = e.tt, vis = e.vis }) end  -- #290-s1b: preserve visibility across reload (was dropping vis -> fog leaked)
+        for _, e in ipairs(mem) do stored = AI_Influence.AddWorldEvent(stored, e.k, e.a, e.b, e.to, e.d, { i = e.i, ap = e.ap, tt = e.tt, vis = e.vis, sid = e.sid, part = e.part }) end  -- #290-s1b/B1: preserve vis/sid/part across reload
         AI_Influence._worldEvents = stored
         log("world-events ledger hydrated n=" .. tostring(#stored))
     end)
 end
 function AI_Influence.OnWorldEvent(param)
     local g = AI_Influence.parseBackendConfig(param)  -- same k=v| wire format
-    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay(), { tt = g.tt, vis = g.vis, ap = g.ap })
+    AI_Influence._worldEvents = AI_Influence.AddWorldEvent(AI_Influence._worldEvents or {}, g.kind, g.a, g.b, g.to, gameDay(), { tt = g.tt, vis = g.vis, ap = g.ap, part = g.part })
     persistWorldEvents()
     log("world event recorded kind=" .. tostring(g.kind) .. " n=" .. tostring(#AI_Influence._worldEvents))
 end
@@ -1149,6 +1159,76 @@ function AI_Influence.CardRoundTripProbe()
 end
 
 -- ---- P1c serverless chat turn: card -> bounded prompt -> direct Player2 -> card ------------
+-- #290 S1 (espionage knowledge model): an NPC's intel ACCESS = their role's base domain+tier, widened
+-- by seniority (combinedskill). Only manager/captain/marine/crew are walk-up conversation targets, so the
+-- deep tier (war plans/faction politics) has NO casual holder - it needs an embedded sleeper or informant.
+function AI_Influence.AccessProfile(role, skill)
+    role = tostring(role or "crew")
+    skill = tonumber(skill) or 0
+    local domain, tier = "logistics", "low"          -- crew / service crew = local gossip
+    if role == "manager" then domain, tier = "economic", "med"
+    elseif role == "captain" then domain, tier = "military", "med"
+    elseif role == "marine" then domain, tier = "military", "low" end
+    -- seniority widens: a senior manager/captain sits near leadership -> also political, higher tier
+    if skill >= 12 and (role == "manager" or role == "captain") then domain = domain .. ",political"; tier = "high"
+    elseif skill >= 8 and tier == "med" then tier = "high" end
+    return domain, tier
+end
+-- #290 S2: the SECRETS an NPC is eligible to KNOW (insider truth), gated by involvement + domain +
+-- seniority tier + participation. Kept SEPARATE from public news so S3's disclosure rule governs them
+-- (knowing is not sharing). secret-strategic (deployments/war) needs HIGH tier or participation;
+-- secret-terms (pacts/treaties) needs MED+. A janitor of the right faction still holds nothing.
+local INTEL_TIER_RANK = { low = 1, med = 2, high = 3 }
+function AI_Influence.InsiderSecrets(evts, viewer, k)
+    if type(evts) ~= "table" then return {} end
+    viewer = viewer or {}
+    local vfac = tostring(viewer.faction_id or "")
+    if vfac == "" then return {} end                       -- no faction identity -> no insider access
+    local vdom = tostring(viewer.domain or "")
+    local vtier = INTEL_TIER_RANK[tostring(viewer.tier or "low")] or 1
+    local part = tostring(viewer.participated or "")
+    local out, want = {}, tonumber(k) or 4
+    for i = #evts, 1, -1 do
+        if #out >= want then break end
+        local e = evts[i]
+        if e and e.tt and (e.vis == "secret-strategic" or e.vis == "secret-terms")
+           and (e.a == vfac or e.b == vfac) then            -- only an insider of a party can hold it
+            local grant = false
+            if e.sid and part ~= "" and ("," .. part .. ","):find("," .. tostring(e.sid) .. ",", 1, true) then
+                grant = true                                -- participated in this exact event
+            else
+                local edom = tostring(e.ap or "")
+                local domOk = (edom == "") or (("," .. vdom .. ","):find("," .. edom .. ",", 1, true) ~= nil)
+                local minTier = (e.vis == "secret-strategic") and 3 or 2   -- strategic=high, terms=med
+                grant = domOk and (vtier >= minTier)
+            end
+            if grant then out[#out + 1] = tostring(e.tt) end
+        end
+    end
+    return out
+end
+-- #290 dev self-test (sim accesstest): deterministic proof of the role+seniority+involvement access gate.
+function AI_Influence.AccessSelfTest()
+    local ev = {}
+    ev = AI_Influence.AddWorldEvent(ev, "pact", "argon", "split", "", gameDay(), { vis="secret-strategic", ap="military", tt="Argon 3rd Fleet guards Zyarth in Dominion IV" })
+    ev = AI_Influence.AddWorldEvent(ev, "pact", "argon", "teladi", "", gameDay(), { vis="secret-terms", ap="economic", tt="Argon-Teladi grain pact: 4000 units phased" })
+    ev = AI_Influence.AddWorldEvent(ev, "pact", "split", "argon", "", gameDay(), { vis="secret-terms", ap="political", tt="Split vassalage under Argon: tribute 3M" })
+    local cases = {
+        { n="argon service crew", role="service crew", skill=2,  fac="argon" },
+        { n="argon captain med",  role="captain",      skill=5,  fac="argon" },
+        { n="argon captain snr",  role="captain",      skill=13, fac="argon" },
+        { n="argon manager med",  role="manager",      skill=5,  fac="argon" },
+        { n="argon manager snr",  role="manager",      skill=13, fac="argon" },
+        { n="teladi manager",     role="manager",      skill=5,  fac="teladi" },
+        { n="split captain snr",  role="captain",      skill=13, fac="split" },
+    }
+    for _, c in ipairs(cases) do
+        local dom, tier = AI_Influence.AccessProfile(c.role, c.skill)
+        local secs = AI_Influence.InsiderSecrets(ev, { faction_id=c.fac, domain=dom, tier=tier }, 5)
+        log("ACCESSTEST " .. c.n .. " => domain=" .. dom .. " tier=" .. tier .. " secrets=" .. #secs .. " [" .. table.concat(secs, " | ") .. "]")
+    end
+    log("ACCESSTEST done")
+end
 -- The ONE code path both the chat window and the continuity probe use. ctx = {target, faction, role}.
 -- onReply(ok, replyText). Turns capped at 8 (Stardew-grounded); facts ride the system prompt.
 function AI_Influence.SendDirectChat(ctx, text, onReply)
@@ -1291,11 +1371,32 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         end
         -- #212: recent world events ride every prompt (serverless event awareness, zero extra calls)
         -- #214: gated by viewer location — crises are local knowledge, diplomacy is galaxy-common
+        -- #290 S1: compute this NPC's role+seniority access profile; thread the REAL faction id + domain
+        -- + tier into the viewer as NEW fields (S2's gate consumes them). The gate still keys on the
+        -- display-name viewer.faction for now, so behaviour is unchanged until S2 flips it.
+        local accDomain, accTier = AI_Influence.AccessProfile(ctx.role, ctx.skill)
+        local viewerFac = tostring(ctx.faction_id or "")
+        log("AIC ACCESS faction_id=" .. viewerFac .. " role=" .. tostring(ctx.role or "") .. " skill=" .. tostring(ctx.skill or "") .. " domain=" .. accDomain .. " tier=" .. accTier)
         local evLines = AI_Influence.WorldEventLines(AI_Influence._worldEvents, 5,
-            { psector = ctx.psector, role = tostring(ctx.role or ""), faction = tostring(ctx.faction or "") })
+            { psector = ctx.psector, role = tostring(ctx.role or ""), faction = tostring(ctx.faction or ""),
+              faction_id = viewerFac, domain = accDomain, tier = accTier })
         if #evLines > 0 then
             sys = sys .. " Recent galactic news you are aware of: " .. table.concat(evLines, "; ")
                 .. ". You may reference these events but never invent others."
+        end
+        -- #290 S2/S3: insider SECRETS this NPC could know, gated by involvement+domain+seniority+participation,
+        -- surfaced UNDER a disclosure rule - knowing is NOT sharing (Ken decision 1). The LLM decides by
+        -- loyalty/trust whether to reveal, deflect, charge, or lie; it must NEVER auto-dump a secret.
+        local secLines = AI_Influence.InsiderSecrets(AI_Influence._worldEvents,
+            { faction_id = viewerFac, domain = accDomain, tier = accTier }, 4)
+        if #secLines > 0 then
+            sys = sys .. " CONFIDENTIAL matters you know as a trusted insider of your faction (NOT public): "
+                .. table.concat(secLines, "; ") .. "."
+                .. " You are under NO obligation to reveal these. Weigh your loyalty to your faction and how"
+                .. " far you trust this player: share only if you genuinely trust them or they make it worth"
+                .. " your while; otherwise deflect, demand something in return, or lie. Never volunteer a"
+                .. " secret to someone you distrust."
+            log("AIC SECRETS eligible=" .. tostring(#secLines) .. " fac=" .. viewerFac .. " tier=" .. accTier)
         end
         -- top-K facts ride the prompt: #226 RELEVANT-first when recall ran, weight order otherwise
         local promptFacts = relevantFacts or AI_Influence.VisibleFacts(card, tier, 8)
