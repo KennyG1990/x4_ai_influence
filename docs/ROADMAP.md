@@ -182,6 +182,20 @@ appears in the newscast or an uninvolved NPC's knowledge; public war/econ/territ
 s2 + Ken's forks: the acquisition layer (B*), rebellion suzerain-scrub, whether vassalage shows a bare
 public outcome.
 
+### #290 S4a 📝 INTEL ACQUISITION - bribe/threaten -> grounded Intelligence Dossier - APPLIED 2026-07-23 (needs save-reload; E2E = sim vassalize -> bribe/threaten an involved-faction NPC -> dossier)
+The first PLAYER-FACING espionage verb. Rides the EXISTING bribe/threaten DND dice (no new machinery): a
+landed bribe/threaten against a non-owned NPC who actually HOLDS an eligible secret (the S2 access gate)
+EXTRACTS one real secret -> a grounded "Intelligence Dossier" item (#280 give_item lane) whose body is the
+REAL ledger tt, plus a timestamped entry in a new in-save PLAYERINTEL ledger (RecordIntel via WithCard;
+{sid,tt,d,src,srcNpc,tier,lie}; dedup by sid). InsiderSecrets refactored -> HeldSecrets returns the secret
+OBJECTS the acquisition needs; InsiderSecrets stays a thin tt-string wrapper for the S3 disclosure prompt.
+Conservation-safe (only real ledger secrets, never invented). Upvalue-safe (recomputes the access profile
+from ctx inside the DND callback rather than adding 3 upvalues to the already-huge closure). Static gates
+GREEN. DEFERRED: false-intel fabrication for disloyal/coerced sources (S4b, needs an LLM call); the explicit
+paid-transfer dossier PURCHASE (vs dice extraction); decay + brokering (S6). PENDING first full-loop in-game
+test (transport + knowledge model + acquisition): reload -> sim vassalize -> bribe/threaten an involved
+NPC -> confirm an Intelligence Dossier with the real secret + "INTEL extracted via bribe/threaten" debuglog.
+
 ### #291 🔌 SELF-CONTAINED TRANSPORT FIX — the mod must NEVER need another mod — ✅ APPLIED 2026-07-23 (ship-critical; needs commit+push+re-download to reach users)
 Ken's friend (clean install, only Player2, NO djfhe) got "[direct chat failed: djfhe request module missing]".
 Root cause: the built-in aic_http.lua transport (bundled LuaSocket) hardcoded BASEDIR=

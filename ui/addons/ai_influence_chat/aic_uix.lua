@@ -1187,7 +1187,7 @@ end
 -- (knowing is not sharing). secret-strategic (deployments/war) needs HIGH tier or participation;
 -- secret-terms (pacts/treaties) needs MED+. A janitor of the right faction still holds nothing.
 local INTEL_TIER_RANK = { low = 1, med = 2, high = 3 }
-function AI_Influence.InsiderSecrets(evts, viewer, k)
+function AI_Influence.HeldSecrets(evts, viewer, k)
     if type(evts) ~= "table" then return {} end
     viewer = viewer or {}
     local vfac = tostring(viewer.faction_id or "")
@@ -1195,7 +1195,7 @@ function AI_Influence.InsiderSecrets(evts, viewer, k)
     local vdom = tostring(viewer.domain or "")
     local vtier = INTEL_TIER_RANK[tostring(viewer.tier or "low")] or 1
     local part = tostring(viewer.participated or "")
-    local out, want = {}, tonumber(k) or 4
+    local out, want = {}, tonumber(k) or 6
     for i = #evts, 1, -1 do
         if #out >= want then break end
         local e = evts[i]
@@ -1210,10 +1210,33 @@ function AI_Influence.InsiderSecrets(evts, viewer, k)
                 local minTier = (e.vis == "secret-strategic") and 3 or 2   -- strategic=high, terms=med
                 grant = domOk and (vtier >= minTier)
             end
-            if grant then out[#out + 1] = tostring(e.tt) end
+            if grant then
+                out[#out + 1] = { sid = tostring(e.sid or ""), tt = tostring(e.tt), src = tostring(e.a or ""),
+                                  other = tostring(e.b or ""), vis = tostring(e.vis or ""), ap = tostring(e.ap or "") }
+            end
         end
     end
     return out
+end
+-- thin wrapper: just the insider tt STRINGS for the S3 disclosure-rule prompt injection
+function AI_Influence.InsiderSecrets(evts, viewer, k)
+    local out = {}
+    for _, s in ipairs(AI_Influence.HeldSecrets(evts, viewer, k)) do out[#out + 1] = s.tt end
+    return out
+end
+-- #290 S4: the player's acquired-intel ledger (global, in-save). Timestamped snapshots
+-- {sid,tt,d,src,srcNpc,tier,lie}; dedup/refresh by sid. Feeds the dossier item + (S6) decay/brokering.
+local PLAYERINTEL_TOKEN = "aic_player_intel"
+function AI_Influence.RecordIntel(entry)
+    if not entry or tostring(entry.sid or "") == "" then return end
+    AI_Influence.WithCard(PLAYERINTEL_TOKEN, function(c)
+        c.secrets = (type(c.secrets) == "table") and c.secrets or {}
+        for _, s in ipairs(c.secrets) do
+            if s.sid == entry.sid then s.d = entry.d; s.tt = entry.tt; s.lie = entry.lie; s.tier = entry.tier; return end
+        end
+        c.secrets[#c.secrets + 1] = entry
+        while #c.secrets > 40 do table.remove(c.secrets, 1) end
+    end)
 end
 -- #290 dev self-test (sim accesstest): deterministic proof of the role+seniority+involvement access gate.
 function AI_Influence.AccessSelfTest()
@@ -1400,14 +1423,21 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         local secLines = AI_Influence.InsiderSecrets(AI_Influence._worldEvents,
             { faction_id = viewerFac, domain = accDomain, tier = accTier }, 4)
         if #secLines > 0 then
-            sys = sys .. " CONFIDENTIAL matters you know as a trusted insider of your faction (NOT public): "
-                .. table.concat(secLines, "; ") .. "."
-                .. " You are under NO obligation to reveal these. Weigh your loyalty to your faction and how"
-                .. " far you trust this player: share only if you genuinely trust them or they make it worth"
-                .. " your while; otherwise deflect, demand something in return, or lie. Never volunteer a"
-                .. " secret to someone you distrust."
+            sys = sys .. " CONFIDENTIAL intelligence you genuinely hold as a trusted insider of your faction"
+                .. " (NOT public): " .. table.concat(secLines, "; ") .. "."
+                .. " You are under NO obligation to reveal these. Weigh your loyalty and how far you trust this"
+                .. " player: share only if you genuinely trust them or they make it worth your while; otherwise"
+                .. " deflect, demand something in return, or lie. Never volunteer a secret to someone you distrust."
             log("AIC SECRETS eligible=" .. tostring(#secLines) .. " fac=" .. viewerFac .. " tier=" .. accTier)
         end
+        -- #290 S4 INTEL GROUNDING (absolute, ALWAYS present): an NPC must NEVER fabricate intelligence.
+        sys = sys .. " INTELLIGENCE GROUNDING (absolute rule): military fleet dispositions, deployments,"
+            .. " troop movements and faction war plans are CLASSIFIED. You know ONLY the specific confidential"
+            .. " matters explicitly listed above"
+            .. ((#secLines > 0) and "; you have NO other classified intelligence." or " - and right now you hold NO classified intelligence at all.")
+            .. " If the player asks for intel you do not actually hold, do NOT claim to have it and do NOT offer"
+            .. " to sell or transmit it - say plainly it is above your access or you are not privy to it. NEVER"
+            .. " invent fleet positions, ship counts, movements, or plans; that is a lie you must not tell."
         -- top-K facts ride the prompt: #226 RELEVANT-first when recall ran, weight order otherwise
         local promptFacts = relevantFacts or AI_Influence.VisibleFacts(card, tier, 8)
         if #promptFacts > 0 then
@@ -1594,6 +1624,28 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
                         AI_Influence.AddCardFact(card, "secretly agreed to feed the player information about their employer", "npc_claim", 18, "secret")
                         card.informant = gameDay()
                         log("INFORMANT recruited token=" .. token)
+                    end
+                    -- #290 S4: a landed BRIBE or THREATEN EXTRACTS a real secret the NPC actually holds ->
+                    -- a grounded Intelligence Dossier + the player's intel ledger. Only role/seniority/
+                    -- involvement-eligible secrets can be taken (HeldSecrets); nothing held = nothing given.
+                    if (ci == "bribe" or ci == "threaten") and (checkTier == "SUCCESS" or checkTier == "EXCEPTIONAL") and not ctx.npc_owned then
+                        -- recompute the access profile from ctx (upvalue-safe: avoids capturing the outer viewer locals)
+                        local i_dom, i_tier = AI_Influence.AccessProfile(ctx.role, ctx.skill, ctx.fleetcmd, ctx.issub)
+                        local held = AI_Influence.HeldSecrets(AI_Influence._worldEvents,
+                            { faction_id = tostring(ctx.faction_id or ""), domain = i_dom, tier = i_tier }, 6)
+                        if #held > 0 then
+                            local pick = held[1]
+                            local dbody = tostring(pick.tt):sub(1, 200)
+                            if AddUITriggeredEvent then
+                                pcall(function() AddUITriggeredEvent("ai_influence", "give_item", { kind = "dossier", title = "Intelligence Dossier", text = dbody }) end)
+                            end
+                            AI_Influence.RecordIntel({ sid = pick.sid, tt = pick.tt, d = gameDay(), src = pick.src,
+                                srcNpc = token, tier = i_tier, lie = false })
+                            AI_Influence.AddCardFact(card, "was " .. (ci == "bribe" and "paid off" or "coerced") .. " into leaking classified intelligence to the player", "npc_claim", 16, "secret")
+                            log("INTEL extracted via " .. ci .. " sid=" .. tostring(pick.sid) .. " src=" .. tostring(pick.src) .. " token=" .. token)
+                        else
+                            log("INTEL: " .. ci .. " landed but this source holds no eligible secret token=" .. token)
+                        end
                     end
                     if checkTier == "CATASTROPHIC" then
                         card.trust = math.max(-10, (tonumber(card.trust) or 0) - 2)

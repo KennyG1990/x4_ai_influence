@@ -27,6 +27,7 @@
             </do_if>
           </do_for_each>
         </do_if>
+        <debug_text text="'AIC S1 facid-resolve: owner=' + (if event.object.owner? then event.object.owner.knownname else 'nil') + ' isplayer=' + (if event.object.owner? and event.object.owner == faction.player then 1 else 0) + ' -> facid=' + md.ai_influence_conversation.State.$facid" filter="general"/>
         <set_value name="md.ai_influence_conversation.State.$npcname" exact="if event.object.knownname? then event.object.knownname else 'Officer'"/>
         <set_value name="md.ai_influence_conversation.State.$skill" exact="if event.object.combinedskill? then event.object.combinedskill else 0"/>
         <set_value name="md.ai_influence_conversation.State.$role" exact="'crew'"/>
