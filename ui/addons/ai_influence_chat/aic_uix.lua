@@ -156,7 +156,7 @@ function AI_Influence.SendToBridge(payload, callback)
     if not AI_Influence.BRIDGE_ENABLED then return end  -- ADR-009 bridge gate
     local req = newRequest("POST")
     if not req then
-        if callback then callback(false, nil, "djfhe request module missing") end
+        if callback then callback(false, nil, "AI Influence: HTTP transport unavailable - see debuglog [AICHTTP] (mod folder must contain x4_ai_influence)") end
         return
     end
     req:setUrl(BRIDGE_URL .. "/v1/request")
@@ -206,7 +206,7 @@ function AI_Influence.SendDirect(messages, opts, callback)
     opts = opts or {}
     local req = newRequest("POST")
     if not req then
-        if callback then callback(false, nil, nil, "djfhe request module missing") end
+        if callback then callback(false, nil, nil, "AI Influence: HTTP transport unavailable - see debuglog [AICHTTP] (mod folder must contain x4_ai_influence)") end
         return
     end
     local be = AI_Influence.ActiveBackend()
@@ -1162,15 +1162,23 @@ end
 -- #290 S1 (espionage knowledge model): an NPC's intel ACCESS = their role's base domain+tier, widened
 -- by seniority (combinedskill). Only manager/captain/marine/crew are walk-up conversation targets, so the
 -- deep tier (war plans/faction politics) has NO casual holder - it needs an embedded sleeper or informant.
-function AI_Influence.AccessProfile(role, skill)
+function AI_Influence.AccessProfile(role, skill, fleetcmd, issub)
     role = tostring(role or "crew")
     skill = tonumber(skill) or 0
+    fleetcmd = tonumber(fleetcmd) or 0               -- # ships this NPC's ship commands (fleet size)
     local domain, tier = "logistics", "low"          -- crew / service crew = local gossip
     if role == "manager" then domain, tier = "economic", "med"
     elseif role == "captain" then domain, tier = "military", "med"
     elseif role == "marine" then domain, tier = "military", "low" end
-    -- seniority widens: a senior manager/captain sits near leadership -> also political, higher tier
-    if skill >= 12 and (role == "manager" or role == "captain") then domain = domain .. ",political"; tier = "high"
+    -- #290 (Ken 2026-07-23): COMMAND POSITION, not raw stats, is the real authority. A fleet COMMANDER
+    -- (their ship leads a fleet) knows deployments; a large fleet = an admiral near strategic leadership.
+    -- A subordinate captain just follows orders -> stays at the base captain tier.
+    if fleetcmd >= 8 then domain, tier = "military,political", "high"      -- admiral: fleet strategy + politics
+    elseif fleetcmd >= 1 then domain, tier = "military", "high" end        -- fleet commander: knows deployments
+    -- stats are the SECONDARY signal: a veteran lone captain / senior station manager also nears leadership
+    if skill >= 12 and (role == "manager" or role == "captain") then
+        if not string.find(domain, "political") then domain = domain .. ",political" end
+        tier = "high"
     elseif skill >= 8 and tier == "med" then tier = "high" end
     return domain, tier
 end
@@ -1221,9 +1229,11 @@ function AI_Influence.AccessSelfTest()
         { n="argon manager snr",  role="manager",      skill=13, fac="argon" },
         { n="teladi manager",     role="manager",      skill=5,  fac="teladi" },
         { n="split captain snr",  role="captain",      skill=13, fac="split" },
+        { n="argon fleet admiral", role="captain",     skill=5,  fac="argon", fleetcmd=12 },
+        { n="argon subordinate",   role="captain",     skill=5,  fac="argon", issub=1 },
     }
     for _, c in ipairs(cases) do
-        local dom, tier = AI_Influence.AccessProfile(c.role, c.skill)
+        local dom, tier = AI_Influence.AccessProfile(c.role, c.skill, c.fleetcmd, c.issub)
         local secs = AI_Influence.InsiderSecrets(ev, { faction_id=c.fac, domain=dom, tier=tier }, 5)
         log("ACCESSTEST " .. c.n .. " => domain=" .. dom .. " tier=" .. tier .. " secrets=" .. #secs .. " [" .. table.concat(secs, " | ") .. "]")
     end
@@ -1374,9 +1384,9 @@ function AI_Influence.SendDirectChat(ctx, text, onReply)
         -- #290 S1: compute this NPC's role+seniority access profile; thread the REAL faction id + domain
         -- + tier into the viewer as NEW fields (S2's gate consumes them). The gate still keys on the
         -- display-name viewer.faction for now, so behaviour is unchanged until S2 flips it.
-        local accDomain, accTier = AI_Influence.AccessProfile(ctx.role, ctx.skill)
+        local accDomain, accTier = AI_Influence.AccessProfile(ctx.role, ctx.skill, ctx.fleetcmd, ctx.issub)
         local viewerFac = tostring(ctx.faction_id or "")
-        log("AIC ACCESS faction_id=" .. viewerFac .. " role=" .. tostring(ctx.role or "") .. " skill=" .. tostring(ctx.skill or "") .. " domain=" .. accDomain .. " tier=" .. accTier)
+        log("AIC ACCESS faction_id=" .. viewerFac .. " role=" .. tostring(ctx.role or "") .. " skill=" .. tostring(ctx.skill or "") .. " fleet=" .. tostring(ctx.fleetcmd or "0") .. " sub=" .. tostring(ctx.issub or "0") .. " domain=" .. accDomain .. " tier=" .. accTier)
         local evLines = AI_Influence.WorldEventLines(AI_Influence._worldEvents, 5,
             { psector = ctx.psector, role = tostring(ctx.role or ""), faction = tostring(ctx.faction or ""),
               faction_id = viewerFac, domain = accDomain, tier = accTier })

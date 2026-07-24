@@ -8,7 +8,7 @@
 
 local M = {}
 
-local BASEDIR = "extensions/x4_ai_influence/lua3p/"
+local BASEDIR = "extensions/x4_ai_influence/lua3p/"   -- resolved to the REAL one by initLibs
 local initialized = false
 local socket = nil
 local jsonlib = nil
@@ -17,24 +17,51 @@ local function log(msg)
     if DebugError then DebugError("[AICHTTP] " .. tostring(msg)) end
 end
 
+-- #291 SELF-CONTAINED (Ken's law): the built-in transport must NEVER assume the mod folder NAME. A GitHub
+-- "Download ZIP" extracts as x4_ai_influence-main/-master, which broke the old single hardcoded path
+-- (core.dll not found -> the misleading "djfhe request module missing" on a clean install). Locate lua3p
+-- folder-name-AGNOSTICALLY: derive from package.path (the game registered our ui path), then common names.
+local function candidateBaseDirs()
+    local dirs, seen = {}, {}
+    local function add(d) if d and not seen[d] then seen[d] = true; dirs[#dirs + 1] = d end end
+    for entry in tostring(package.path or ""):gmatch("[^;]+") do
+        local base = entry:match("(.-extensions/[^/]*x4_ai_influence[^/]*/)")
+        if base then add(base .. "lua3p/") end
+    end
+    add("extensions/x4_ai_influence/lua3p/")
+    add("extensions/x4_ai_influence-main/lua3p/")
+    add("extensions/x4_ai_influence-master/lua3p/")
+    return dirs
+end
+
 local function initLibs()
     if initialized then return socket ~= nil end
     initialized = true
-    package.path = package.path .. ";" .. BASEDIR .. "?.lua;" .. BASEDIR .. "luasocket/?.lua;" .. BASEDIR .. "luasec/?.lua"
     if not package.loaded["socket.core"] then
-        local f, err = package.loadlib(BASEDIR .. "luasocket/core.dll", "luaopen_socket_core")
-        if not f then log("core.dll load FAILED: " .. tostring(err)) return false end
+        local f, lasterr
+        for _, dir in ipairs(candidateBaseDirs()) do
+            local ff, err = package.loadlib(dir .. "luasocket/core.dll", "luaopen_socket_core")
+            if ff then BASEDIR = dir; f = ff; break end
+            lasterr = err
+            log("core.dll not loadable at " .. dir .. " (" .. tostring(err) .. ")")
+        end
+        if not f then
+            log("FATAL: bundled LuaSocket core.dll failed at EVERY candidate path - last err: "
+                .. tostring(lasterr) .. ". Cause is usually a renamed mod folder (must contain x4_ai_influence)"
+                .. " or a non-Windows OS.")
+            return false
+        end
         local core = f()
         package.loaded["socket.core"] = core
-        -- the vendored socket.lua (djfhe-namespaced upstream copy) requires this name instead:
-        package.loaded["luasocket.socket.core"] = core
+        package.loaded["luasocket.socket.core"] = core   -- vendored socket.lua requires this name
     end
+    package.path = package.path .. ";" .. BASEDIR .. "?.lua;" .. BASEDIR .. "luasocket/?.lua;" .. BASEDIR .. "luasec/?.lua"
     local ok, s = pcall(require, "socket")
-    if not ok then log("socket.lua load FAILED: " .. tostring(s)) return false end
+    if not ok then log("socket.lua load FAILED from " .. BASEDIR .. ": " .. tostring(s)) return false end
     socket = s
     local okj, j = pcall(require, "json")
     if okj then jsonlib = j end
-    log("AIC-HTTP libs loaded (LuaSocket " .. tostring(socket._VERSION or "?") .. ")")
+    log("AIC-HTTP libs loaded from " .. BASEDIR .. " (LuaSocket " .. tostring(socket._VERSION or "?") .. ")")
     return true
 end
 M.initLibs = initLibs

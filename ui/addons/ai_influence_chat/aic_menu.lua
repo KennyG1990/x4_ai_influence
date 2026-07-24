@@ -612,7 +612,9 @@ function menu.onInput(text)
             target = menu.currentContext.target,
             faction = menu.currentContext.faction,
             faction_id = fc.real_facid,   -- #290 S1: resolved faction id (display name won't match ledger ids)
-            skill = fc.npc_skill,          -- #290 S1: combinedskill = seniority, widens intel access domain
+            skill = fc.npc_skill,          -- #290 S1: combinedskill = seniority (secondary signal)
+            fleetcmd = fc.fleetcmd,        -- #290: fleet size this NPC commands = PRIMARY command authority
+            issub = fc.issub,              -- #290: 1 if a subordinate in another fleet
             role = fc.npc_role or fc.role or "officer",
             standing = fc.standing,   -- P3-a grounded context from MD
             psector = fc.psector,

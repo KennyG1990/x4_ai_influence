@@ -182,6 +182,21 @@ appears in the newscast or an uninvolved NPC's knowledge; public war/econ/territ
 s2 + Ken's forks: the acquisition layer (B*), rebellion suzerain-scrub, whether vassalage shows a bare
 public outcome.
 
+### #291 🔌 SELF-CONTAINED TRANSPORT FIX — the mod must NEVER need another mod — ✅ APPLIED 2026-07-23 (ship-critical; needs commit+push+re-download to reach users)
+Ken's friend (clean install, only Player2, NO djfhe) got "[direct chat failed: djfhe request module missing]".
+Root cause: the built-in aic_http.lua transport (bundled LuaSocket) hardcoded BASEDIR=
+"extensions/x4_ai_influence/lua3p/" - a GitHub "Download ZIP" extracts the folder as x4_ai_influence-main,
+so core.dll was missed, initLibs failed, and with no djfhe fallback the MISLEADING djfhe error surfaced.
+KEY PROOF that the built-in works: Ken has NO djfhe (just an un-unpacked .rar) yet conversations work -> X4
+DOES permit package.loadlib + the bundled LuaSocket loads. Fix (upholds [[self-contained-mod-law]]): locate
+lua3p folder-name-AGNOSTICALLY (self-locate from package.path via a forward-slash pattern, then candidate
+names x4_ai_influence/-main/-master) with per-attempt [AICHTTP] diagnostics; and the transport-failure
+message no longer blames djfhe (points at [AICHTTP] + the folder-name requirement). Caught + fixed an
+ambiguous Lua escape (\] in the first pattern) before it could break the whole transport - no static Lua
+gate, hand-verified. Validated green. RESIDUAL: core.dll is Windows-only; a non-Windows (Proton/native)
+user still can't load it -> a deeper portability problem (FFI/ws2_32 or platform binaries) if the friend is
+not on Windows. PENDING: Ken commit+push; friend re-download; confirm via the new [AICHTTP] debuglog line.
+
 ### #290 S1-S3 🧠 KNOWLEDGE MODEL — who knows what, and knowing != sharing — ✅ BUILT + LOGIC-PROVEN 2026-07-23 (needs save-reload; E2E = sim accesstest / real conversation AIC ACCESS log)
 The espionage knowledge model, built additively on the #290 ledger. S0-remainder: stable content-derived
 secret ids (e.sid) + participant tags. S1 (inputs): MD resolves the NPC's REAL faction id (walk-known-ids;
@@ -196,7 +211,13 @@ NOT sharing - the LLM decides by loyalty/trust to reveal/deflect/charge/lie, nev
 captain/crew are walk-up targets, so top-tier secrets (war plans) have NO casual holder - they need an embedded
 sleeper or informant (embed-and-rise). Static gates GREEN. LOGIC PROVEN offline (7/7 cases: janitor=0, mid
 captain=0, senior captain=garrison+vassalage, mid manager=trade, both pact parties know it, involvement
-required). Dev harness: 'sim accesstest' logs the full matrix to debuglog. PENDING in-game: reload -> sim
+required). COMMAND-POSITION REFINEMENT (Ken 2026-07-23 catch): seniority was stats-only (combinedskill); now
+COMMAND POSITION dominates - a fleet COMMANDER (ship.allsubordinates.count>0, the OPORD-proven property)
+knows deployments (military/high); a large fleet >=8 = an admiral near strategy (military,political/high);
+a SUBORDINATE captain (ship.commander exists) just follows orders (base captain/med); stats stay a
+secondary widener. Read MD-side (fleetcmd/issub) -> ctx -> AccessProfile. Re-proven offline (10/10:
+admiral=garrison+vassalage, small-fleet cmdr=garrison only, subordinate=nothing). Dev harness: 'sim
+accesstest' logs the full matrix to debuglog. PENDING in-game: reload -> sim
 accesstest (Lua-compiles) + a real conversation (AIC ACCESS log shows a resolved faction_id/role/skill = the
 S1 plumbing works). Fails SAFE if plumbing has a gap (no faction_id -> no secrets shared -> no leak). NEXT:
 S4 paid/coerced acquisition (bribe/threaten -> dossier) -> S5 insert-own-agent -> S6 decay+brokering -> S7 AI
